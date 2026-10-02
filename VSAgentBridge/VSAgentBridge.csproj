@@ -14,4 +14,20 @@
     <Prefer32Bit>false</Prefer32Bit>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="envdte" Version="8.0.2" ExcludeAssets="runtime" />
+  </ItemGroup>
+  
+  <!--
+    EnvDTE/stdole interop types are embedded into the exe (NoPIA).
+    The license of these packages does not allow redistributing the DLLs,
+    and embedding also removes any dependency on the installed VS version.
+  -->
+  <Target Name="EmbedVsInteropTypes" AfterTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <ReferencePath Condition="'%(FileName)' == 'EnvDTE' or '%(FileName)' == 'stdole'">
+        <EmbedInteropTypes>true</EmbedInteropTypes>
+      </ReferencePath>
+    </ItemGroup>
+  </Target>
 </Project>
