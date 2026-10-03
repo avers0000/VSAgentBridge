@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <PackageReference Include="envdte" Version="8.0.2" ExcludeAssets="runtime" />
+    <PackageReference Include="envdte80" Version="8.0.3" ExcludeAssets="runtime" />
   </ItemGroup>
   
   <!--
@@ -25,7 +26,7 @@
   -->
   <Target Name="EmbedVsInteropTypes" AfterTargets="ResolveAssemblyReferences">
     <ItemGroup>
-      <ReferencePath Condition="'%(FileName)' == 'EnvDTE' or '%(FileName)' == 'stdole'">
+      <ReferencePath Condition="'%(FileName)' == 'EnvDTE' or '%(FileName)' == 'EnvDTE80' or '%(FileName)' == 'stdole'">
         <EmbedInteropTypes>true</EmbedInteropTypes>
       </ReferencePath>
     </ItemGroup>

@@ -22,8 +22,10 @@ internal static class DiagCommand
         var instances = RunningObjectTable.GetVisualStudioInstances();
         PrintInstances(instances, total.ElapsedMilliseconds);
 
+        var cacheFiles = PrintTfvcCache();
+
         if (fileArg != null)
-            PrintFile(instances, fileArg);
+            PrintFile(instances, fileArg, cacheFiles);
 
         if (showAll)
         {
@@ -68,22 +70,21 @@ internal static class DiagCommand
         }
     }
 
-    private static void PrintFile(IReadOnlyList<VsInstance> instances, string fileArg)
+    private static void PrintFile(IReadOnlyList<VsInstance> instances, string fileArg, IReadOnlyList<TfvcCacheFile> cacheFiles)
     {
         var cwd = Environment.CurrentDirectory;
         var path = PathUtil.ToFullPath(fileArg, cwd);
 
         Console.WriteLine();
         Console.WriteLine($"File: {path}");
-        if (File.Exists(path))
-        {
-            var readOnly = File.GetAttributes(path).HasFlag(FileAttributes.ReadOnly);
-            Console.WriteLine($"  Exists, read-only: {(readOnly ? "yes" : "no")}");
-        }
-        else
-        {
-            Console.WriteLine("  Does not exist");
-        }
+        var exists = File.Exists(path);
+        var readOnly = exists && File.GetAttributes(path).HasFlag(FileAttributes.ReadOnly);
+        Console.WriteLine(exists ? $"  Exists, read-only: {(readOnly ? "yes" : "no")}" : "  Does not exist");
+
+        var tfvc = TfvcPathClassifier.Classify(path, Environment.MachineName, cacheFiles);
+        Console.WriteLine($"  TFVC cache: {tfvc.Status}");
+        if (tfvc.Workspace != null)
+            Console.WriteLine($"    workspace '{tfvc.Workspace.Name}', root {tfvc.MappedRoot}, from {tfvc.CacheFilePath}");
 
         var sw = Stopwatch.StartNew();
         var selection = VsSelector.SelectForExistingFile(instances, path, cwd);
@@ -102,21 +103,52 @@ internal static class DiagCommand
             : "  Selected: none");
         Console.WriteLine($"  Reason  : {selection.Reason}");
 
-        if (selected == null)
-            return;
-
         sw.Restart();
-        try
+        var decision = EditDecider.Decide(exists, readOnly, tfvc, () => VsFileFactsQuery.Query(selection, path));
+        PrintDecision(decision, sw.ElapsedMilliseconds);
+    }
+
+    private static IReadOnlyList<TfvcCacheFile> PrintTfvcCache()
+    {
+        var sw = Stopwatch.StartNew();
+        var files = TfvcCacheReader.ReadAll();
+
+        Console.WriteLine();
+        Console.WriteLine($"TFVC workspace cache: {files.Count} file(s)  ({sw.ElapsedMilliseconds} ms)  machine={Environment.MachineName}");
+        foreach (var file in files)
         {
-            var scc = selected.Dte.SourceControl;
-            Console.WriteLine($"  IsItemUnderSCC   : {scc.IsItemUnderSCC(path)}");
-            Console.WriteLine($"  IsItemCheckedOut : {scc.IsItemCheckedOut(path)}");
+            Console.WriteLine($"  {file.FilePath}");
+            Console.WriteLine($"    modified {file.LastWriteTimeUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
+            if (file.Error != null)
+            {
+                Console.WriteLine($"    ERROR {file.Error}");
+                continue;
+            }
+
+            foreach (var ws in file.Workspaces)
+            {
+                var other = string.Equals(ws.Computer, Environment.MachineName, StringComparison.OrdinalIgnoreCase)
+                    ? "" : "  (other computer)";
+                Console.WriteLine($"    workspace '{ws.Name}'  computer={ws.Computer}  local={ws.IsLocalWorkspace}{other}");
+                foreach (var mapped in ws.MappedPaths)
+                    Console.WriteLine($"      {mapped}");
+            }
         }
-        catch (COMException ex)
-        {
-            Console.WriteLine($"  SourceControl ERROR 0x{ex.HResult:X8}: {ex.Message}");
-        }
-        Console.WriteLine($"  ({sw.ElapsedMilliseconds} ms)");
+
+        return files;
+    }
+
+    private static void PrintDecision(EditDecision decision, long elapsedMs)
+    {
+        Console.WriteLine($"  Decision: {decision.Action}  ({decision.Reason})  ({elapsedMs} ms)");
+
+        var vs = decision.Vs;
+        if (vs == null)
+            Console.WriteLine("    Visual Studio not asked");
+        else if (vs.Error != null)
+            Console.WriteLine($"    VS error: {vs.Error}");
+        else
+            Console.WriteLine($"    VS: found={vs.InstanceFound}  underScc={vs.IsUnderScc}  checkedOut={vs.IsCheckedOut}");
     }
 
     private static bool IsElevated()
