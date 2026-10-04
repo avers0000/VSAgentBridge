@@ -18,6 +18,10 @@
     <PackageReference Include="envdte" Version="8.0.2" ExcludeAssets="runtime" />
     <PackageReference Include="envdte80" Version="8.0.3" ExcludeAssets="runtime" />
   </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="VSAgentBridge.Tests" />
+  </ItemGroup>
   
   <!--
     EnvDTE/stdole interop types are embedded into the exe (NoPIA).

@@ -3,5 +3,6 @@
     <File Path=".gitignore" />
     <File Path="README.md" />
   </Folder>
+  <Project Path="VSAgentBridge.Tests/VSAgentBridge.Tests.csproj" Id="772880b0-876f-4542-a99e-54922663c3cf" />
   <Project Path="VSAgentBridge/VSAgentBridge.csproj" />
 </Solution>

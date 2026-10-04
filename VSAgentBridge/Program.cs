@@ -11,7 +11,7 @@ internal static class Program
         if (args.Length > 0 && string.Equals(args[0], "diag", StringComparison.OrdinalIgnoreCase))
             return DiagCommand.Run(args.Skip(1).ToArray());
 
-        Console.Error.WriteLine("Usage: vsagentbridge diag [--all]");
+        Console.Error.WriteLine("Usage: vsagentbridge diag [--all] [--checkout] [file]");
         return 2;
     }
 }

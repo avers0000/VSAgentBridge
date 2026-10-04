@@ -6,12 +6,16 @@ using VSAgentBridge.Vs;
 
 namespace VSAgentBridge.Diag;
 
-/// <summary>"vsagentbridge diag [--all] [file]": diagnostic output, no side effects.</summary>
+/// <summary>
+/// "vsagentbridge diag [--all] [--checkout] [file]": diagnostic output.
+/// Changes nothing unless --checkout is given and the decision for the file is Checkout.
+/// </summary>
 internal static class DiagCommand
 {
     public static int Run(string[] args)
     {
-        var showAll = args.Any(a => string.Equals(a, "--all", StringComparison.OrdinalIgnoreCase));
+        var showAll = HasFlag(args, "--all");
+        var checkout = HasFlag(args, "--checkout");
         var fileArg = args.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal));
         var total = Stopwatch.StartNew();
 
@@ -25,7 +29,7 @@ internal static class DiagCommand
         var cacheFiles = PrintTfvcCache();
 
         if (fileArg != null)
-            PrintFile(instances, fileArg, cacheFiles);
+            PrintFile(instances, fileArg, cacheFiles, checkout);
 
         if (showAll)
         {
@@ -70,7 +74,7 @@ internal static class DiagCommand
         }
     }
 
-    private static void PrintFile(IReadOnlyList<VsInstance> instances, string fileArg, IReadOnlyList<TfvcCacheFile> cacheFiles)
+    private static void PrintFile(IReadOnlyList<VsInstance> instances, string fileArg, IReadOnlyList<TfvcCacheFile> cacheFiles, bool checkout)
     {
         var cwd = Environment.CurrentDirectory;
         var path = PathUtil.ToFullPath(fileArg, cwd);
@@ -106,6 +110,20 @@ internal static class DiagCommand
         sw.Restart();
         var decision = EditDecider.Decide(exists, readOnly, tfvc, () => VsFileFactsQuery.Query(selection, path));
         PrintDecision(decision, sw.ElapsedMilliseconds);
+
+        if (!checkout)
+            return;
+
+        if (decision.Action != EditAction.Checkout)
+        {
+            Console.WriteLine($"  Checkout: skipped, decision is {decision.Action}");
+            return;
+        }
+
+        // Decision Checkout implies VS was asked and an instance was selected.
+        sw.Restart();
+        var result = VsCheckout.CheckOut(selection.Selected!, path);
+        PrintCheckout(result, sw.ElapsedMilliseconds);
     }
 
     private static IReadOnlyList<TfvcCacheFile> PrintTfvcCache()
@@ -150,6 +168,18 @@ internal static class DiagCommand
         else
             Console.WriteLine($"    VS: found={vs.InstanceFound}  underScc={vs.IsUnderScc}  checkedOut={vs.IsCheckedOut}");
     }
+
+    private static void PrintCheckout(CheckoutResult result, long elapsedMs)
+    {
+        Console.WriteLine($"  Checkout: {(result.Succeeded ? "OK" : "FAILED")}  ({elapsedMs} ms)");
+        Console.WriteLine($"    CheckOutItem returned {result.CheckOutItemReturned}, attempts {result.Attempts}");
+        Console.WriteLine($"    After: writable={result.IsWritable}  checkedOut={result.IsCheckedOut}  (verify wait {result.VerifyWaitMs} ms)");
+        if (result.Error != null)
+            Console.WriteLine($"    Error: {result.Error}");
+    }
+
+    private static bool HasFlag(string[] args, string flag) =>
+        args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
 
     private static bool IsElevated()
     {
