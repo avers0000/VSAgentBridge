@@ -17,10 +17,17 @@
   <ItemGroup>
     <PackageReference Include="envdte" Version="8.0.2" ExcludeAssets="runtime" />
     <PackageReference Include="envdte80" Version="8.0.3" ExcludeAssets="runtime" />
+    <PackageReference Include="System.Text.Json" Version="10.0.12" />
   </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="VSAgentBridge.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="vsagentbridge.sample.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
   
   <!--

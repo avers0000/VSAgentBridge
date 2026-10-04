@@ -1,0 +1,14 @@
+// VS Agent Bridge settings.
+// To use: copy this file to "vsagentbridge.json" next to vsagentbridge.exe and edit it.
+// Without vsagentbridge.json the defaults below apply. Comments are allowed.
+{
+  // How much is written to Logs\vsagentbridge-yyyyMMdd.log:
+  //   "off"     - nothing
+  //   "issues"  - denials, failed checkouts, internal errors, invalid requests, settings warnings
+  //   "actions" - issues plus successful checkouts through Visual Studio (default)
+  //   "all"     - every call, including edits of writable files that need nothing
+  "logLevel": "actions",
+
+  // Daily log files older than this many days are deleted; 0 keeps them forever.
+  "logRetentionDays": 30
+}
