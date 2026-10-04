@@ -77,10 +77,10 @@ function askBridge(request) {
 
 function bridgeFailed(reason) {
     throw new Error(
-        `VS Agent Bridge is not working: ${reason}. The edit was not made. ` +
-        "Do not retry this edit and do not write the change to another file or location. " +
+        `VS Agent Bridge blocked this edit: the bridge could not run (${reason}). The file was not changed. ` +
+        "Do not retry this change with any tool (edit, write or any other) and do not write it to another file or location. " +
         "Show the intended change in your reply as a diff, and at the end of your answer tell the user: " +
-        `VS Agent Bridge failed (${reason}); check its installation and its log.`)
+        `VS Agent Bridge could not run (${reason}); check its installation and its log, then ask to repeat the change.`)
 }
 
 function shorten(text) {
