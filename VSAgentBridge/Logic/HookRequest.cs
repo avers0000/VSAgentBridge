@@ -6,10 +6,13 @@ namespace VSAgentBridge.Logic;
 /// One request to "vsagentbridge hook" in the bridge's own, harness-neutral format:
 /// {"event":"before","tool":"edit","path":"...","cwd":"...","harness":"opencode","session":"..."}.
 /// Adapters translate harness events into it.
+/// "before" comes before the tool runs; "after" comes after it completed successfully, and only when
+/// the response to "before" asked for it ("after": true). Both carry the same fields.
 /// </summary>
 internal sealed class HookRequest
 {
     public const string BeforeEvent = "before";
+    public const string AfterEvent = "after";
 
     public HookRequest(string @event, string tool, string filePath, string? cwd, string? harness, string? session)
     {
@@ -21,10 +24,12 @@ internal sealed class HookRequest
         Session = session;
     }
 
-    /// <summary>Only "before" for now.</summary>
+    /// <summary>"before" or "after".</summary>
     public string Event { get; }
 
-    /// <summary>Harness tool name (edit, write, Edit, ...); logged only at this stage.</summary>
+    public bool IsAfter => Event == AfterEvent;
+
+    /// <summary>Harness tool name (edit, write, Edit, ...); a log label only: the bridge never interprets it.</summary>
     public string Tool { get; }
 
     /// <summary>File path as the model gave it: absolute or relative to <see cref="Cwd"/>.</summary>
@@ -67,8 +72,10 @@ internal sealed class HookRequest
             var path = GetString(root, "path");
             var cwd = GetString(root, "cwd");
 
-            if (ev != BeforeEvent)
-                error = ev == null ? "'event' is missing or not a string" : $"unsupported event '{ev}' (only '{BeforeEvent}')";
+            if (ev == null)
+                error = "'event' is missing or not a string";
+            else if (ev != BeforeEvent && ev != AfterEvent)
+                error = $"unsupported event '{ev}' (expected '{BeforeEvent}' or '{AfterEvent}')";
             else if (string.IsNullOrEmpty(tool))
                 error = "'tool' is missing or not a string";
             else if (string.IsNullOrWhiteSpace(path))
@@ -78,7 +85,7 @@ internal sealed class HookRequest
             else
             {
                 error = "";
-                return new HookRequest(ev!, tool!, path!, cwd, GetString(root, "harness"), GetString(root, "session"));
+                return new HookRequest(ev, tool!, path!, cwd, GetString(root, "harness"), GetString(root, "session"));
             }
 
             return null;

@@ -1,6 +1,8 @@
 ﻿// VS Agent Bridge — OpenCode adapter.
-// Before OpenCode edits or writes a file, asks vsagentbridge.exe (one folder up) whether the edit may go ahead;
-// the exe checks the file out through Visual Studio when needed.
+// Before OpenCode edits or writes a file, asks vsagentbridge.exe (one folder up) whether the call may go ahead;
+// the exe checks the file out through Visual Studio when needed. When the exe asks for it ("after": true),
+// calls it again once the tool has completed, so that a new file is added to its project, and appends
+// the exe's message to the tool's result.
 // Everything OpenCode-specific lives here: the exe knows nothing about OpenCode, its tools or their inputs.
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
@@ -14,8 +16,13 @@ const exePath = path.join(pluginDir, "..", "vsagentbridge.exe")
 // patch (several files inside patchText) comes later.
 const FILE_TOOLS = new Set(["edit", "write"])
 
-// Checkout may wait for a busy Visual Studio (E_PENDING retries, message filter): up to ~20 s in the worst case.
+// Checkout or adding to a project may wait for a busy Visual Studio (E_PENDING retries, message filter).
 const TIMEOUT_MS = 30_000
+
+// "after" calls the bridge asked for, waiting for their tool to finish.
+// An entry whose "after" never comes (tool cancelled, OpenCode quirk) is dropped after this time.
+const PENDING_MAX_AGE_MS = 10 * 60_000
+const pending = []
 
 export default {
     id: "vsagentbridge",
@@ -30,20 +37,94 @@ export default {
             const filePath = event.input?.path
             if (typeof filePath !== "string" || filePath.trim() === "") return // the tool reports its own input errors
 
-            const request = { event: "before", harness: "opencode", tool: event.tool, path: filePath }
-            if (cwd) request.cwd = cwd
-            if (event.sessionID) request.session = event.sessionID
-
-            const response = askBridge(request)
+            const response = askBridge(makeRequest("before", event.tool, filePath, cwd, event.sessionID), blockedText)
             if (response.decision === "deny") throw new Error(response.message)
+
+            if (response.after === true) {
+                dropStale()
+                pending.push({
+                    tool: event.tool,
+                    path: filePath,
+                    session: event.sessionID,
+                    callID: event.callID,
+                    since: Date.now(),
+                })
+            }
+        })
+
+        // Synchronous as well: the message must be in the result before OpenCode hands it to the model.
+        await ctx.tool.hook("execute.after", (event) => {
+            if (!FILE_TOOLS.has(event.tool)) return
+
+            const entry = takePending(event)
+            if (!entry) return
+            if (event.status !== "completed") return // the file was not written: nothing to add
+
+            const request = makeRequest("after", entry.tool, entry.path, cwd, entry.session)
+            const response = askBridge(request, (reason) => notAddedText(entry.path, reason), { soft: true })
+            if (typeof response.message === "string" && response.message) appendToResult(event, response.message)
         })
     },
 }
 
-// Runs "vsagentbridge.exe hook" and returns its response. Any failure of the bridge blocks the edit
-// with an explicit message: a broken bridge must be visible, not silently skipped.
-function askBridge(request) {
-    if (!fs.existsSync(exePath)) bridgeFailed(`${exePath} not found`)
+function makeRequest(eventName, tool, filePath, cwd, session) {
+    const request = { event: eventName, harness: "opencode", tool, path: filePath }
+    if (cwd) request.cwd = cwd
+    if (session) request.session = session
+    return request
+}
+
+// Finds and removes the "before" entry this "after" belongs to. Best match first:
+// the call id, then session + path from the tool input, then the oldest entry of the same tool and session.
+function takePending(event) {
+    let index = -1
+    if (event.callID) index = pending.findIndex((p) => p.callID === event.callID)
+    if (index < 0) {
+        const input = event.input ?? event.args
+        const filePath = input?.path
+        if (typeof filePath === "string")
+            index = pending.findIndex((p) => p.tool === event.tool && p.path === filePath && sameSession(p, event))
+    }
+    if (index < 0) index = pending.findIndex((p) => p.tool === event.tool && sameSession(p, event))
+    return index < 0 ? undefined : pending.splice(index, 1)[0]
+}
+
+function sameSession(entry, event) {
+    return !entry.session || !event.sessionID || entry.session === event.sessionID
+}
+
+function dropStale() {
+    const now = Date.now()
+    for (let i = pending.length - 1; i >= 0; i--) if (now - pending[i].since > PENDING_MAX_AGE_MS) pending.splice(i, 1)
+}
+
+// The result is a string or an object whose "content" (string or array of parts) is what the model sees.
+// A new value is always assigned to event.result: OpenCode takes the reassigned value (as in its own examples);
+// changing the old object in place may be lost, and its arrays may be frozen.
+function appendToResult(event, text) {
+    const result = event.result
+    if (typeof result === "string") {
+        event.result = `${result}\n\n${text}`
+        return
+    }
+
+    const base = result ?? {}
+    const content = Array.isArray(base.content) ? [...base.content, { type: "text", text }]
+        : typeof base.content === "string" ? `${base.content}\n\n${text}`
+            : [{ type: "text", text }]
+    event.result = { ...base, content }
+}
+
+// Runs "vsagentbridge.exe hook" and returns its response.
+// A failure of the bridge is never silent: "before" blocks the call (throws), "after" (soft) returns
+// a response whose message tells the model the file was not added — the file already exists then.
+function askBridge(request, failureText, { soft = false } = {}) {
+    const fail = (reason) => {
+        if (soft) return { decision: "allow", reason: "BridgeFailed", message: failureText(reason) }
+        throw new Error(failureText(reason))
+    }
+
+    if (!fs.existsSync(exePath)) return fail(`${exePath} not found`)
 
     const result = spawnSync(exePath, ["hook"], {
         input: Buffer.from(JSON.stringify(request), "utf8"),
@@ -53,34 +134,40 @@ function askBridge(request) {
     })
 
     if (result.error) {
-        bridgeFailed(result.error.code === "ETIMEDOUT"
+        return fail(result.error.code === "ETIMEDOUT"
             ? `no answer within ${TIMEOUT_MS / 1000} s`
             : `cannot run ${exePath}: ${result.error.message}`)
     }
-    if (result.signal) bridgeFailed(`vsagentbridge.exe was terminated (${result.signal})`)
+    if (result.signal) return fail(`vsagentbridge.exe was terminated (${result.signal})`)
     if (result.status !== 0) {
         const stderr = (result.stderr ?? "").trim()
-        bridgeFailed(`vsagentbridge.exe exited with code ${result.status}${stderr ? ": " + stderr : ""}`)
+        return fail(`vsagentbridge.exe exited with code ${result.status}${stderr ? ": " + stderr : ""}`)
     }
 
     let response
     try {
         response = JSON.parse(result.stdout)
     } catch {
-        bridgeFailed(`unreadable response: ${shorten(result.stdout)}`)
+        return fail(`unreadable response: ${shorten(result.stdout)}`)
     }
 
     if (response?.decision === "allow") return response
     if (response?.decision === "deny" && typeof response.message === "string" && response.message) return response
-    bridgeFailed(`unexpected response: ${shorten(result.stdout)}`)
+    return fail(`unexpected response: ${shorten(result.stdout)}`)
 }
 
-function bridgeFailed(reason) {
-    throw new Error(
-        `VS Agent Bridge blocked this edit: the bridge could not run (${reason}). The file was not changed. ` +
+function blockedText(reason) {
+    return `VS Agent Bridge blocked this edit: the bridge could not run (${reason}). The file was not changed. ` +
         "Do not retry this change with any tool (edit, write or any other) and do not write it to another file or location. " +
         "Show the intended change in your reply as a diff, and at the end of your answer tell the user: " +
-        `VS Agent Bridge could not run (${reason}); check its installation and its log, then ask to repeat the change.`)
+        `VS Agent Bridge could not run (${reason}); check its installation and its log, then ask to repeat the change.`
+}
+
+function notAddedText(filePath, reason) {
+    return `VS Agent Bridge: ${filePath} was created, but it was not added to a project: the bridge could not run (${reason}). ` +
+        "It is in no project and not in TFVC. Do not create it again and do not edit project files to include it. " +
+        "At the end of your answer tell the user: the new file was not added to a project; add it in Visual Studio " +
+        "(right-click its folder in Solution Explorer, Add > Existing Item), and check the installation and the log of VS Agent Bridge."
 }
 
 function shorten(text) {
