@@ -1,8 +1,8 @@
 ﻿// VS Agent Bridge — OpenCode adapter.
-// Before OpenCode edits or writes a file, asks vsagentbridge.exe (one folder up) whether the call may go ahead;
-// the exe checks the file out through Visual Studio when needed. When the exe asks for it ("after": true),
-// calls it again once the tool has completed, so that a new file is added to its project, and appends
-// the exe's message to the tool's result.
+// Before OpenCode edits, writes or reads a file, asks vsagentbridge.exe (one folder up) what to do with the call:
+// let it through (allow), block it (deny), or send it to another path (redirect: a copy under the bridge's Output).
+// When the exe asks for it ("after": true), calls it again once the tool has completed, so that a new file is added
+// to its project; the exe's message is appended to the tool's result. A redirect's message is appended the same way.
 // Everything OpenCode-specific lives here: the exe knows nothing about OpenCode, its tools or their inputs.
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
@@ -14,12 +14,15 @@ const exePath = path.join(pluginDir, "..", "vsagentbridge.exe")
 
 // OpenCode tools that write to the single file named by input.path.
 // patch (several files inside patchText) comes later.
-const FILE_TOOLS = new Set(["edit", "write"])
+const WRITE_TOOLS = new Set(["edit", "write"])
+
+// OpenCode tools that read the single file named by input.path: sent to the session's copy if there is one.
+const READ_TOOLS = new Set(["read"])
 
 // Checkout or adding to a project may wait for a busy Visual Studio (E_PENDING retries, message filter).
 const TIMEOUT_MS = 30_000
 
-// "after" calls the bridge asked for, waiting for their tool to finish.
+// Work left for "after": either a call to the bridge (the exe asked for it) or a message to append (a redirect).
 // An entry whose "after" never comes (tool cancelled, OpenCode quirk) is dropped after this time.
 const PENDING_MAX_AGE_MS = 10 * 60_000
 const pending = []
@@ -32,33 +35,44 @@ export default {
         // Synchronous on purpose: OpenCode is known to cancel the call when a synchronous handler throws;
         // whether it waits for an async handler was never tested, and the edit must not start before the checkout.
         await ctx.tool.hook("execute.before", (event) => {
-            if (!FILE_TOOLS.has(event.tool)) return
+            const isWrite = WRITE_TOOLS.has(event.tool)
+            const isRead = READ_TOOLS.has(event.tool)
+            if (!isWrite && !isRead) return
 
             const filePath = event.input?.path
             if (typeof filePath !== "string" || filePath.trim() === "") return // the tool reports its own input errors
 
-            const response = askBridge(makeRequest("before", event.tool, filePath, cwd, event.sessionID), blockedText)
+            const request = makeRequest(isRead ? "read" : "before", event.tool, filePath, cwd, event.sessionID)
+
+            // A read changes nothing: if the bridge cannot run, the model reads the original rather than nothing.
+            const response = isRead
+                ? askBridge(request, () => undefined, { soft: true, silent: true })
+                : askBridge(request, blockedText)
+            if (!response) return
+
             if (response.decision === "deny") throw new Error(response.message)
 
-            if (response.after === true) {
-                dropStale()
-                pending.push({
-                    tool: event.tool,
-                    path: filePath,
-                    session: event.sessionID,
-                    callID: event.callID,
-                    since: Date.now(),
-                })
+            if (response.decision === "redirect") {
+                event.input.path = response.path
+                remember(event, filePath, response.path, { message: response.message })
+                return
             }
+
+            if (response.after === true) remember(event, filePath, filePath, { callAfter: true })
         })
 
         // Synchronous as well: the message must be in the result before OpenCode hands it to the model.
         await ctx.tool.hook("execute.after", (event) => {
-            if (!FILE_TOOLS.has(event.tool)) return
+            if (!WRITE_TOOLS.has(event.tool) && !READ_TOOLS.has(event.tool)) return
 
             const entry = takePending(event)
             if (!entry) return
-            if (event.status !== "completed") return // the file was not written: nothing to add
+            if (event.status !== "completed") return // nothing was written or read: nothing to add
+
+            if (entry.message) {
+                appendToResult(event, entry.message)
+                return
+            }
 
             const request = makeRequest("after", entry.tool, entry.path, cwd, entry.session)
             const response = askBridge(request, (reason) => notAddedText(entry.path, reason), { soft: true })
@@ -74,6 +88,21 @@ function makeRequest(eventName, tool, filePath, cwd, session) {
     return request
 }
 
+// path: the path the model gave (what the bridge is asked about again in "after");
+// inputPath: the path the tool actually runs with (differs after a redirect), for matching the "after" event.
+function remember(event, filePath, inputPath, work) {
+    dropStale()
+    pending.push({
+        tool: event.tool,
+        path: filePath,
+        inputPath,
+        session: event.sessionID,
+        callID: event.callID,
+        since: Date.now(),
+        ...work,
+    })
+}
+
 // Finds and removes the "before" entry this "after" belongs to. Best match first:
 // the call id, then session + path from the tool input, then the oldest entry of the same tool and session.
 function takePending(event) {
@@ -83,7 +112,8 @@ function takePending(event) {
         const input = event.input ?? event.args
         const filePath = input?.path
         if (typeof filePath === "string")
-            index = pending.findIndex((p) => p.tool === event.tool && p.path === filePath && sameSession(p, event))
+            index = pending.findIndex((p) => p.tool === event.tool && (p.inputPath === filePath || p.path === filePath)
+                && sameSession(p, event))
     }
     if (index < 0) index = pending.findIndex((p) => p.tool === event.tool && sameSession(p, event))
     return index < 0 ? undefined : pending.splice(index, 1)[0]
@@ -116,10 +146,12 @@ function appendToResult(event, text) {
 }
 
 // Runs "vsagentbridge.exe hook" and returns its response.
-// A failure of the bridge is never silent: "before" blocks the call (throws), "after" (soft) returns
+// A failure of the bridge is never silent for a write: "before" blocks the call (throws); "after" (soft) returns
 // a response whose message tells the model the file was not added — the file already exists then.
-function askBridge(request, failureText, { soft = false } = {}) {
+// A read (soft + silent) just goes ahead: the response is undefined and the model reads the original.
+function askBridge(request, failureText, { soft = false, silent = false } = {}) {
     const fail = (reason) => {
+        if (silent) return undefined
         if (soft) return { decision: "allow", reason: "BridgeFailed", message: failureText(reason) }
         throw new Error(failureText(reason))
     }
@@ -152,8 +184,13 @@ function askBridge(request, failureText, { soft = false } = {}) {
     }
 
     if (response?.decision === "allow") return response
-    if (response?.decision === "deny" && typeof response.message === "string" && response.message) return response
+    if (response?.decision === "deny" && nonEmpty(response.message)) return response
+    if (response?.decision === "redirect" && nonEmpty(response.path) && nonEmpty(response.message)) return response
     return fail(`unexpected response: ${shorten(result.stdout)}`)
+}
+
+function nonEmpty(value) {
+    return typeof value === "string" && value !== ""
 }
 
 function blockedText(reason) {

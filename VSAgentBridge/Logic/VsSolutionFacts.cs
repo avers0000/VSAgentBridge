@@ -29,7 +29,7 @@ internal sealed class VsSolutionFacts
     public static VsSolutionFacts Failed(string instance, string error) =>
         new(instance, solutionPath: null, Array.Empty<VsProjectFacts>(), containsPath: false, error);
 
-    /// <summary>Instance label for messages and the log, e.g. "17.0/pid12345".</summary>
+    /// <summary>Instance label for the log, e.g. "17.0/pid12345"; messages show it through VsInstanceLabel.Describe.</summary>
     public string Instance { get; }
 
     /// <summary>Full path of the open .sln/.slnx; null when no solution is open or the instance failed.</summary>

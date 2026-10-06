@@ -9,10 +9,13 @@ namespace VSAgentBridge.Hook;
 /// <summary>
 /// "vsagentbridge hook": reads one JSON request from stdin, writes one JSON response to stdout,
 /// logs the call according to vsagentbridge.json.
-/// "before": an existing file → edit logic (slice 1); a missing file → new-file logic (slice 2).
-/// "after": the new file was written → decide again and add it to its project through Visual Studio.
+/// "before": a path that already has a copy in this session → the copy (slice 3); otherwise an existing file →
+/// edit logic (slice 1), a missing file → new-file logic (slice 2); whatever cannot be written in place goes to
+/// the session folder under Output (slice 3).
+/// "after": the new file was written → decide again and add it to its project; if that fails, copy it to Output.
+/// "read": a path that has a copy in this session is read from the copy.
 /// stdout carries only the response; diagnostics go to stderr and the log.
-/// Exit code 0 whenever a response was written (allow or deny); 1 for an invalid request.
+/// Exit code 0 whenever a response was written (allow, deny or redirect); 1 for an invalid request.
 /// </summary>
 internal static class HookCommand
 {
@@ -32,11 +35,16 @@ internal static class HookCommand
     private const string ReasonNotCreated = "NotCreated";
     private const string ReasonInternalError = "InternalError";
     private const string ReasonInvalidPath = "InvalidPath";
+    private const string ReasonSessionCopy = "SessionCopy";
+    private const string ReasonNoSessionCopy = "NoSessionCopy";
+    private const string ReasonInOutput = "InOutput";
+    private const string ReasonOutputFailed = "OutputFailed";
 
     public static int Run()
     {
         var total = Stopwatch.StartNew();
-        var settings = BridgeSettings.Load(AppDomain.CurrentDomain.BaseDirectory, out var settingsWarning);
+        var exeDirectory = AppDomain.CurrentDomain.BaseDirectory;
+        var settings = BridgeSettings.Load(exeDirectory, out var settingsWarning);
         var log = new HookLog();
         log.Add("settingsWarning", settingsWarning);
 
@@ -57,8 +65,8 @@ internal static class HookCommand
             log.Add("event", request.Event);
             log.Add("tool", request.Tool);
 
-            var response = Handle(request, log, out importance);
-            log.Add("verdict", response.Allowed ? "allow" : "deny");
+            var response = Handle(request, settings.ResolveOutputDir(exeDirectory), log, out importance);
+            log.Add("verdict", response.DecisionName);
             log.Add("result", response.Reason);
             if (response.CallAfter)
                 log.Add("callAfter", true);
@@ -76,8 +84,10 @@ internal static class HookCommand
     }
 
     /// <param name="importance">The least verbose log level that still records this call.</param>
-    private static HookResponse Handle(HookRequest request, HookLog log, out LogVerbosity importance)
+    private static HookResponse Handle(HookRequest request, string outputDir, HookLog log, out LogVerbosity importance)
     {
+        // Which internal-error text fits if something throws: the file is being created, or an existing one edited.
+        var creating = request.IsAfter;
         try
         {
             var cwd = request.Cwd ?? Environment.CurrentDirectory;
@@ -98,16 +108,40 @@ internal static class HookCommand
 
             log.Add("path", path);
 
+            // A copy under Output, used by its real path (the model may take it from a redirect message):
+            // written and read as it is, never redirected into _outside of its own session.
+            if (OutputLayout.IsInOutput(path, outputDir))
+            {
+                importance = LogVerbosity.All;
+                return HookResponse.Allow(ReasonInOutput);
+            }
+
+            // Writes and reads of the same file in the same session always meet at this one path.
+            // Paths inside it are relative to the agent's cwd as given; without one, under _outside.
+            var target = OutputLayout.TargetPath(outputDir, request.Session, request.Cwd, path);
+            var output = new OutputStore(
+                OutputLayout.SessionFolder(outputDir, request.Session), request.Session, request.Harness, request.Cwd);
+
+            if (request.IsRead)
+                return HandleRead(target, log, out importance);
+
             using var filter = MessageFilter.Register();
 
             if (request.IsAfter)
-                return HandleAfter(path, log, out importance);
+                return HandleAfter(path, target, output, log, out importance);
 
             // Edit or creation is decided by the disk, not by the tool: "edit" with an empty oldString
             // creates a file too (slice 2 results, §1.2).
-            return File.Exists(path)
-                ? HandleEdit(path, cwd, log, out importance)
-                : HandleNewFileBefore(path, log, out importance);
+            creating = !File.Exists(path);
+
+            // Once a file of this session went to Output, the whole session works on that copy, whatever
+            // Visual Studio can do now: otherwise edits of one session would split between the copy and the original.
+            if (File.Exists(target))
+                return RedirectToSessionCopy(target, creating, log, out importance);
+
+            return creating
+                ? HandleNewFileBefore(path, target, output, log, out importance)
+                : HandleEdit(path, cwd, target, output, log, out importance);
         }
         catch (Exception ex)
         {
@@ -115,13 +149,52 @@ internal static class HookCommand
             // not as a raw tool error it would try to work around.
             log.Add("exception", ex.ToString());
             importance = LogVerbosity.Issues;
-            return HookResponse.Deny(ReasonInternalError, HookMessages.InternalError);
+
+            // Reading changes nothing: a failed lookup of the session copy must not stop the model from reading.
+            if (request.IsRead)
+                return HookResponse.Allow(ReasonInternalError);
+
+            return HookResponse.Deny(ReasonInternalError,
+                creating ? HookMessages.InternalErrorNewFile : HookMessages.InternalError);
         }
+    }
+
+    // ---- Read (slice 3) ----
+
+    private static HookResponse HandleRead(string target, HookLog log, out LogVerbosity importance)
+    {
+        // No Visual Studio, no TFVC cache: a read only needs to know whether this session has a copy.
+        if (!File.Exists(target))
+        {
+            importance = LogVerbosity.All;
+            return HookResponse.Allow(ReasonNoSessionCopy);
+        }
+
+        log.Add("output", target);
+        importance = LogVerbosity.Actions;
+        return HookResponse.Redirect(ReasonSessionCopy, target, RedirectMessages.Read(target));
+    }
+
+    // ---- Session copy (slice 3) ----
+
+    // The full instructions were given with the first redirect of this file in the session; here one line suffices
+    // (slice 3 results, §4.1). The copy exists, so nothing under Output needs preparing and no disk error can occur.
+    private static HookResponse RedirectToSessionCopy(
+        string target, bool creating, HookLog log, out LogVerbosity importance)
+    {
+        log.Add("exists", !creating);
+        log.Add("output", target);
+        log.Add("outputCopy", "reused"); // as OutputResult.CopyState for a reused copy
+
+        // An expected consequence of an earlier redirect, not a new problem: logged with the actions.
+        importance = LogVerbosity.Actions;
+        return HookResponse.Redirect(ReasonSessionCopy, target, RedirectMessages.SessionCopy(target));
     }
 
     // ---- Existing file (slice 1) ----
 
-    private static HookResponse HandleEdit(string path, string cwd, HookLog log, out LogVerbosity importance)
+    private static HookResponse HandleEdit(
+        string path, string cwd, string target, OutputStore output, HookLog log, out LogVerbosity importance)
     {
         var readOnly = (File.GetAttributes(path) & FileAttributes.ReadOnly) != 0;
         log.Add("exists", true);
@@ -144,20 +217,23 @@ internal static class HookCommand
                 return HookResponse.Allow(decision.Reason.ToString());
 
             case EditAction.Redirect:
-                // Redirection to Output comes in slice 3; until then the edit is denied with an explanation.
-                importance = LogVerbosity.Issues;
-                return HookResponse.Deny(decision.Reason.ToString(), HookMessages.ForRedirect(decision.Reason));
+                {
+                    importance = LogVerbosity.Issues;
+                    var (cause, fix) = HookMessages.Explain(decision.Reason);
+                    return RedirectExisting(path, target, output, decision.Reason.ToString(), cause, fix, log);
+                }
 
             case EditAction.Checkout:
                 // Decision Checkout implies Visual Studio was asked and an instance was selected.
-                return CheckOut(probe.SelectedInstance!, path, log, out importance);
+                return CheckOut(probe.SelectedInstance!, path, target, output, log, out importance);
 
             default:
                 throw new ArgumentOutOfRangeException(nameof(decision), decision.Action, "Unknown edit action.");
         }
     }
 
-    private static HookResponse CheckOut(VsInstance vs, string path, HookLog log, out LogVerbosity importance)
+    private static HookResponse CheckOut(
+        VsInstance vs, string path, string target, OutputStore output, HookLog log, out LogVerbosity importance)
     {
         var sw = Stopwatch.StartNew();
         var result = VsCheckout.CheckOut(vs, path);
@@ -178,22 +254,38 @@ internal static class HookCommand
         }
 
         importance = LogVerbosity.Issues;
-        return HookResponse.Deny(ReasonCheckoutFailed, HookMessages.ForCheckoutFailure(result));
+        var (cause, fix) = HookMessages.ExplainCheckoutFailure(result);
+        return RedirectExisting(path, target, output, ReasonCheckoutFailed, cause, fix, log);
+    }
+
+    private static HookResponse RedirectExisting(
+        string path, string target, OutputStore output, string reason, string cause, string? fix, HookLog log)
+    {
+        var result = output.PrepareCopy(path, target);
+        LogOutput(log, result);
+
+        return result.Succeeded
+            ? HookResponse.Redirect(reason, target, RedirectMessages.ExistingFile(target, cause, fix))
+            : HookResponse.Deny(ReasonOutputFailed, RedirectMessages.OutputFailed(cause, result.Error!, isNewFile: false));
     }
 
     // ---- New file (slice 2) ----
 
-    private static HookResponse HandleNewFileBefore(string path, HookLog log, out LogVerbosity importance)
+    private static HookResponse HandleNewFileBefore(
+        string path, string target, OutputStore output, HookLog log, out LogVerbosity importance)
     {
         log.Add("exists", false);
         var (decision, _) = DecideNewFile(path, log);
 
         // The solution already lists a file that is missing on disk (deleted locally, not yet got from TFS):
         // creating it anew would be a change TFVC does not know about (slice 2 results, §1.4a).
-        if (decision.Action == NewFileAction.Deny || decision.Reason == NewFileReason.AlreadyInProject)
+        var alreadyInProject = decision.Reason == NewFileReason.AlreadyInProject;
+        if (decision.Action == NewFileAction.Redirect || alreadyInProject)
         {
             importance = LogVerbosity.Issues;
-            return HookResponse.Deny(decision.Reason.ToString(), NewFileMessages.ForDenial(decision));
+            var (cause, fix) = NewFileMessages.Explain(decision);
+            return RedirectNew(target, output, decision.Reason.ToString(), cause, fix,
+                addToProject: !alreadyInProject, log);
         }
 
         // The "after" call is the one that does something; this line matters only while debugging.
@@ -201,7 +293,20 @@ internal static class HookCommand
         return HookResponse.Allow(decision.Reason.ToString(), callAfter: decision.RequestsAfter);
     }
 
-    private static HookResponse HandleAfter(string path, HookLog log, out LogVerbosity importance)
+    private static HookResponse RedirectNew(
+        string target, OutputStore output, string reason, string cause, string? fix,
+        bool addToProject, HookLog log)
+    {
+        var result = output.PrepareNewFile(target);
+        LogOutput(log, result);
+
+        return result.Succeeded
+            ? HookResponse.Redirect(reason, target, RedirectMessages.NewFile(target, cause, fix, addToProject))
+            : HookResponse.Deny(ReasonOutputFailed, RedirectMessages.OutputFailed(cause, result.Error!, isNewFile: true));
+    }
+
+    private static HookResponse HandleAfter(
+        string path, string target, OutputStore output, HookLog log, out LogVerbosity importance)
     {
         var exists = File.Exists(path);
         log.Add("exists", exists);
@@ -219,16 +324,19 @@ internal static class HookCommand
         switch (decision.Action)
         {
             case NewFileAction.AddToProject:
-                return AddToProject(probe.InstanceAt(decision.SolutionIndex)!, decision, path, log, out importance);
+                return AddToProject(probe.InstanceAt(decision.SolutionIndex)!, decision, path, target, output, log, out importance);
 
             case NewFileAction.LeaveOutsideProjects:
                 importance = LogVerbosity.Issues;
-                return HookResponse.Allow(decision.Reason.ToString(), NewFileMessages.OutsideProjects(path));
+                return HookResponse.Allow(decision.Reason.ToString(), NewFileMessages.OutsideProjects);
 
-            case NewFileAction.Deny:
-                // Too late to block: the file exists. The model is told it is in no project.
-                importance = LogVerbosity.Issues;
-                return HookResponse.Allow(decision.Reason.ToString(), NewFileMessages.NotAdded(path, decision));
+            case NewFileAction.Redirect:
+                {
+                    // Too late to redirect: the file exists. It stays in place, a copy goes to Output.
+                    importance = LogVerbosity.Issues;
+                    var (cause, fix) = NewFileMessages.Explain(decision);
+                    return CopyNotAdded(path, target, output, decision.Reason.ToString(), cause, fix, log);
+                }
 
             case NewFileAction.None:
                 if (decision.Reason == NewFileReason.AlreadyInProject)
@@ -246,6 +354,19 @@ internal static class HookCommand
             default:
                 throw new ArgumentOutOfRangeException(nameof(decision), decision.Action, "Unknown new-file action.");
         }
+    }
+
+    // The file stays where the tool wrote it (Visual Studio may already refer to it there); the copy makes
+    // the rest of the session work on one version, which the user later merges back (slice 3 results, §1.5).
+    private static HookResponse CopyNotAdded(
+        string path, string target, OutputStore output, string reason, string cause, string? fix, HookLog log)
+    {
+        var result = output.CopyCreatedFile(path, target);
+        LogOutput(log, result);
+
+        var message = RedirectMessages.CreatedNotAdded(
+            cause, fix, result.Succeeded ? target : null, result.Error);
+        return HookResponse.Allow(reason, message);
     }
 
     private static (NewFileDecision Decision, VsNewFileProbe Probe) DecideNewFile(string path, HookLog log)
@@ -267,8 +388,7 @@ internal static class HookCommand
             log.Add("vsMs", probe.QueryMs);
 
             var errors = decision.Solutions.Where(s => s.Error != null).Select(s => $"{s.Instance}: {s.Error}").ToList();
-            if (errors.Count > 0)
-                log.Add("vsErrors", string.Join("; ", errors));
+            if (errors.Count > 0) log.Add("vsErrors", string.Join("; ", errors));
         }
         if (decision.Instances.Count > 0)
             log.Add("instances", string.Join(",", decision.Instances));
@@ -282,7 +402,8 @@ internal static class HookCommand
     }
 
     private static HookResponse AddToProject(
-        VsInstance vs, NewFileDecision decision, string path, HookLog log, out LogVerbosity importance)
+        VsInstance vs, NewFileDecision decision, string path, string target, OutputStore output,
+        HookLog log, out LogVerbosity importance)
     {
         // AddToProject implies a loaded target project in the working instance.
         var project = decision.Project!;
@@ -305,11 +426,12 @@ internal static class HookCommand
         if (result.Succeeded)
         {
             importance = LogVerbosity.Actions;
-            return HookResponse.Allow(ReasonAddedToProject, NewFileMessages.AddedToProject(path, project.Name));
+            return HookResponse.Allow(ReasonAddedToProject, NewFileMessages.AddedToProject(project.Name));
         }
 
         importance = LogVerbosity.Issues;
-        return HookResponse.Allow(ReasonAddFailed, NewFileMessages.AddFailed(path, project.Name, result));
+        var (cause, fix) = NewFileMessages.ExplainAddFailure(project.Name, result);
+        return CopyNotAdded(path, target, output, ReasonAddFailed, cause, fix, log);
     }
 
     private static void LogSourceControl(HookLog log, VsInstance? vs, string path)
@@ -331,6 +453,13 @@ internal static class HookCommand
 
     // ---- Shared ----
 
+    private static void LogOutput(HookLog log, OutputResult result)
+    {
+        log.Add("output", result.TargetPath);
+        log.Add("outputCopy", result.CopyState);
+        log.Add("outputError", result.Error);
+    }
+
     private static TfvcPathClassification ClassifyTfvc(string path, HookLog log)
     {
         var sw = Stopwatch.StartNew();
@@ -350,7 +479,7 @@ internal static class HookCommand
 
         var selected = probe.SelectedInstance;
         log.Add("vsInstances", probe.InstanceCount);
-        log.Add("vs", selected != null ? $"{selected.MonikerVersion}/pid{selected.ProcessId}" : "none");
+        log.Add("vs", selected != null ? VsInstanceLabel.Format(selected.MonikerVersion, selected.ProcessId) : "none");
         log.Add("vsChoice", probe.Selection?.Reason);
         log.Add("vsError", vs.Error);
         if (vs.InstanceFound)

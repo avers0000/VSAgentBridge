@@ -4,11 +4,18 @@
 {
   // How much is written to Logs\vsagentbridge-yyyyMMdd.log:
   //   "off"     - nothing
-  //   "issues"  - denials, failed checkouts, internal errors, invalid requests, settings warnings
-  //   "actions" - issues plus successful checkouts through Visual Studio (default)
+  //   "issues"  - redirects to Output, denials, failed checkouts or adds, internal errors,
+  //               invalid requests, settings warnings
+  //   "actions" - issues plus what the bridge did through Visual Studio (checkouts, files added
+  //               to projects) and later reads and edits of files already redirected in a session (default)
   //   "all"     - every call, including edits of writable files that need nothing
   "logLevel": "actions",
 
   // Daily log files older than this many days are deleted; 0 keeps them forever.
   "logRetentionDays": 30
+
+  // Where files go that cannot be written in place (one subfolder per agent session).
+  // Absolute path only; default: the Output folder next to vsagentbridge.exe.
+  // A short path is easier to allow in the agent's permissions (OpenCode: "external_directory").
+  // , "outputDir": "D:\\VSAB\\Output"
 }

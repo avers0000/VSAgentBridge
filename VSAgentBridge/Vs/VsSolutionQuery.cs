@@ -19,7 +19,7 @@ internal static class VsSolutionQuery
     public static IReadOnlyList<VsSolutionFacts> Query(IReadOnlyList<VsInstance> instances, string path) =>
         instances.Select(vs => QueryOne(vs, path)).ToList();
 
-    public static string Label(VsInstance vs) => $"{vs.MonikerVersion}/pid{vs.ProcessId}";
+    public static string Label(VsInstance vs) => VsInstanceLabel.Format(vs.MonikerVersion, vs.ProcessId);
 
     /// <summary>
     /// Project.FullName, or null where the project does not implement it: an unloaded project in VS 2019

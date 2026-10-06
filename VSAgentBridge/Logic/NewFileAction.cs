@@ -5,7 +5,8 @@ internal enum NewFileAction
 {
     /// <summary>
     /// Let the tool through and do nothing afterwards: the path is not in a TFVC server workspace,
-    /// or a project of an open solution already lists it.
+    /// or a project of an open solution already lists it (in "before" the hook redirects that case:
+    /// the file is missing on disk, so creating it in place would bypass TFVC).
     /// </summary>
     None,
 
@@ -21,6 +22,9 @@ internal enum NewFileAction
     /// </summary>
     LeaveOutsideProjects,
 
-    /// <summary>Block the tool: the file must not be created (slice 3 replaces this with redirection to Output).</summary>
-    Deny,
+    /// <summary>
+    /// The file must not be created in place. In "before" the hook redirects the tool to the session folder
+    /// under Output; in "after" (the file already exists) it leaves the file in place and copies it there.
+    /// </summary>
+    Redirect,
 }

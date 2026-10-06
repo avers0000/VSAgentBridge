@@ -109,7 +109,7 @@ internal static class NewFileDecider
         IReadOnlyList<string>? instances = null,
         VsProjectFacts? project = null,
         IReadOnlyList<VsProjectFacts>? projectsInFolder = null) =>
-        new(NewFileAction.Deny, reason, tfvc, solutions, solutionIndex, instances, project,
+        new(NewFileAction.Redirect, reason, tfvc, solutions, solutionIndex, instances, project,
             folderChain: null, projectsInFolder);
 
     // Full path with exactly one trailing separator, so that StartsWith respects folder boundaries:

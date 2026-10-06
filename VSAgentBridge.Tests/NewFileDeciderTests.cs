@@ -258,7 +258,7 @@ internal sealed class NewFileDeciderTests
 
     private static void AssertDeny(NewFileDecision decision, NewFileReason reason)
     {
-        Assert.AreEqual(NewFileAction.Deny, decision.Action);
+        Assert.AreEqual(NewFileAction.Redirect, decision.Action);
         Assert.AreEqual(reason, decision.Reason);
         Assert.IsFalse(decision.RequestsAfter);
     }

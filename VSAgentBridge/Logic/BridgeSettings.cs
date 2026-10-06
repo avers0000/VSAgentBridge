@@ -11,18 +11,32 @@ internal sealed class BridgeSettings
 {
     public const string FileName = "vsagentbridge.json";
 
-    public static BridgeSettings Default { get; } = new(LogVerbosity.Actions, logRetentionDays: 30);
+    /// <summary>Folder for redirected files when "outputDir" is not set: next to the exe.</summary>
+    public const string DefaultOutputFolderName = "Output";
 
-    public BridgeSettings(LogVerbosity logLevel, int logRetentionDays)
+    public static BridgeSettings Default { get; } = new(LogVerbosity.Actions, logRetentionDays: 30, outputDir: null);
+
+    public BridgeSettings(LogVerbosity logLevel, int logRetentionDays, string? outputDir)
     {
         LogLevel = logLevel;
         LogRetentionDays = logRetentionDays;
+        OutputDir = outputDir;
     }
 
     public LogVerbosity LogLevel { get; }
 
     /// <summary>Daily log files older than this many days are deleted; 0 keeps them forever.</summary>
     public int LogRetentionDays { get; }
+
+    /// <summary>
+    /// Absolute folder for redirected files, as configured; null means the default
+    /// (<see cref="DefaultOutputFolderName"/> next to the exe, see <see cref="ResolveOutputDir"/>).
+    /// </summary>
+    public string? OutputDir { get; }
+
+    /// <summary>The folder redirected files go to: the configured one, or Output next to the exe.</summary>
+    public string ResolveOutputDir(string exeDirectory) =>
+        OutputDir ?? Path.Combine(exeDirectory, DefaultOutputFolderName);
 
     public static BridgeSettings Load(string directory, out string? warning)
     {
@@ -94,14 +108,52 @@ internal sealed class BridgeSettings
                     problems.Add("'logRetentionDays' must be a whole number, 0 or more");
             }
 
+            var outputDir = Default.OutputDir;
+            if (root.TryGetProperty("outputDir", out var outputValue))
+            {
+                if (outputValue.ValueKind == JsonValueKind.String && TryParseOutputDir(outputValue.GetString(), out var parsed))
+                    outputDir = parsed;
+                else
+                    problems.Add("'outputDir' must be an absolute folder path");
+            }
+
             warning = problems.Count == 0
                 ? null
                 : $"{FileName}: {string.Join("; ", problems)}; defaults used for these settings";
-            return new BridgeSettings(level, days);
+            return new BridgeSettings(level, days, outputDir);
         }
     }
 
     // Enum.TryParse also accepts numbers ("7"); IsDefined rejects values outside the enum.
     private static bool TryParseLevel(string? value, out LogVerbosity level) =>
         Enum.TryParse(value, ignoreCase: true, out level) && Enum.IsDefined(typeof(LogVerbosity), level);
+
+    // Absolute only: a relative path would depend on the current directory of whoever starts the hook
+    // (the agent's working folder), and redirected files would scatter across solutions.
+    // "D:folder" (drive-relative) and "\folder" (root of the current drive) are rooted but not absolute.
+    private static bool TryParseOutputDir(string? value, out string? outputDir)
+    {
+        outputDir = null;
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        var trimmed = value!.Trim();
+        if (!IsFullyQualified(trimmed))
+            return false;
+
+        try
+        {
+            outputDir = Path.GetFullPath(trimmed);
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    // Path.IsPathFullyQualified exists only from .NET Core 2.1; this is its Windows logic for net48.
+    private static bool IsFullyQualified(string path) =>
+        path.Length >= 3 && char.IsLetter(path[0]) && path[1] == ':' && (path[2] == '\\' || path[2] == '/')
+        || path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal);
 }

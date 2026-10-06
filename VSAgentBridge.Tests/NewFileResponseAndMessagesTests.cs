@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using VSAgentBridge.Logic;
 
 namespace VSAgentBridge.Tests;
@@ -7,6 +7,12 @@ namespace VSAgentBridge.Tests;
 internal sealed class NewFileResponseAndMessagesTests
 {
     private const string FilePath = @"D:\Src\App\New.cs";
+
+    private static readonly NewFileReason[] RedirectReasons =
+    {
+        NewFileReason.NotUnderOpenSolution, NewFileReason.SeveralInstances, NewFileReason.VisualStudioError,
+        NewFileReason.AlreadyInProject, NewFileReason.SeveralProjectsInFolder, NewFileReason.ProjectUnloaded,
+    };
 
     // ---- HookResponse: "after" and messages with allow ----
 
@@ -42,7 +48,7 @@ internal sealed class NewFileResponseAndMessagesTests
         Assert.IsFalse(doc.RootElement.TryGetProperty("after", out _));
     }
 
-    // ---- NewFileMessages: denials ----
+    // ---- NewFileMessages.Explain ----
 
     [TestMethod]
     [DataRow(NewFileReason.NotUnderOpenSolution)]
@@ -51,129 +57,171 @@ internal sealed class NewFileResponseAndMessagesTests
     [DataRow(NewFileReason.AlreadyInProject)]
     [DataRow(NewFileReason.SeveralProjectsInFolder)]
     [DataRow(NewFileReason.ProjectUnloaded)]
-    public void ForDenial_EveryDenialReason_HasSpecificText(NewFileReason reason)
+    public void Explain_EveryRedirectReason_HasSpecificCauseAndFix(NewFileReason reason)
     {
-        var text = NewFileMessages.ForDenial(Decision(reason));
+        var (cause, fix) = NewFileMessages.Explain(Decision(reason));
 
-        AssertDenialShape(text);
-        Assert.IsFalse(text.Contains("could not be prepared"), $"Fell back to the generic text for {reason}");
+        Assert.IsFalse(cause.Contains("could not be prepared"), $"Fell back to the generic text for {reason}");
+        Assert.IsFalse(string.IsNullOrEmpty(fix), $"No fix for {reason}");
+        Assert.IsFalse(fix!.Contains("repeat"), $"A redirect needs no repeat: {fix}");
+    }
+
+    // Slice 3 results, §4.1: a fix is what the user does before putting the copy in place.
+    [TestMethod]
+    [DataRow(NewFileReason.NotUnderOpenSolution)]
+    [DataRow(NewFileReason.SeveralInstances)]
+    [DataRow(NewFileReason.VisualStudioError)]
+    [DataRow(NewFileReason.AlreadyInProject)]
+    [DataRow(NewFileReason.SeveralProjectsInFolder)]
+    [DataRow(NewFileReason.ProjectUnloaded)]
+    public void Explain_Fix_IsAnImperativeFragment(NewFileReason reason)
+    {
+        HookResponseAndMessagesTests.AssertFixFragment(NewFileMessages.Explain(Decision(reason)).Fix!);
     }
 
     [TestMethod]
-    public void ForDenial_AllTextsDiffer()
+    public void ExplainAddFailure_Fixes_AreImperativeFragments()
     {
-        var reasons = new[]
-        {
-            NewFileReason.NotUnderOpenSolution, NewFileReason.SeveralInstances, NewFileReason.VisualStudioError,
-            NewFileReason.AlreadyInProject, NewFileReason.SeveralProjectsInFolder, NewFileReason.ProjectUnloaded,
-        };
-
-        var texts = reasons.Select(r => NewFileMessages.ForDenial(Decision(r))).ToList();
-
-        Assert.AreEqual(texts.Count, texts.Distinct().Count());
+        HookResponseAndMessagesTests.AssertFixFragment(NewFileMessages.ExplainAddFailure("App", Result(addedItemPath: @"D:\Src\App\Copy\New.cs")).Fix!);
+        HookResponseAndMessagesTests.AssertFixFragment(NewFileMessages.ExplainAddFailure("App", Result(projectSaved: false)).Fix!);
     }
 
     [TestMethod]
-    public void ForDenial_SeveralInstances_NamesThem()
+    public void Explain_AllCausesDiffer()
     {
-        var text = NewFileMessages.ForDenial(Decision(NewFileReason.SeveralInstances, instances: new[] { "16.0/pid1", "17.0/pid2" }));
+        var causes = RedirectReasons.Select(r => NewFileMessages.Explain(Decision(r)).Cause).ToList();
 
-        Assert.IsTrue(text.Contains("16.0/pid1, 17.0/pid2"), text);
+        Assert.AreEqual(causes.Count, causes.Distinct().Count());
     }
 
     [TestMethod]
-    public void ForDenial_SeveralProjectsInFolder_NamesThem()
+    public void Explain_SeveralInstances_NamesProductPidAndSolution()
     {
-        var text = NewFileMessages.ForDenial(Decision(NewFileReason.SeveralProjectsInFolder,
+        var decision = Decision(NewFileReason.SeveralInstances,
+            instances: new[] { "16.0/pid1", "17.0/pid2" },
+            solutions: new[]
+            {
+                Solution("16.0/pid1", @"D:\Src\Big.sln"),
+                Solution("17.0/pid2", @"D:\Src\Other.sln"),
+            });
+
+        var (cause, _) = NewFileMessages.Explain(decision);
+
+        Assert.IsTrue(cause.Contains("VS2019 (pid 1): Big.sln, VS2022 (pid 2): Other.sln"), cause);
+    }
+
+    [TestMethod]
+    public void Explain_VisualStudioError_NamesInstanceWithoutSolution()
+    {
+        var decision = Decision(NewFileReason.VisualStudioError,
+            instances: new[] { "16.0/pid7" },
+            solutions: new[] { VsSolutionFacts.Failed("16.0/pid7", "RPC_E_CALL_REJECTED") });
+
+        var (cause, _) = NewFileMessages.Explain(decision);
+
+        Assert.IsTrue(cause.Contains("(VS2019 (pid 7);"), cause);
+        Assert.IsFalse(cause.Contains("pid 7):"), cause);
+    }
+
+    [TestMethod]
+    public void Explain_SeveralProjectsInFolder_NamesThem()
+    {
+        var (cause, _) = NewFileMessages.Explain(Decision(NewFileReason.SeveralProjectsInFolder,
             projectsInFolder: new[] { Project("A"), Project("B") }));
 
-        Assert.IsTrue(text.Contains("A, B"), text);
+        Assert.IsTrue(cause.Contains("A, B"), cause);
     }
 
     [TestMethod]
-    public void ForDenial_ProjectUnloaded_NamesProject()
+    public void Explain_ProjectUnloaded_NamesProjectInCause()
     {
-        var text = NewFileMessages.ForDenial(Decision(NewFileReason.ProjectUnloaded, project: Project("Db")));
+        var (cause, fix) = NewFileMessages.Explain(Decision(NewFileReason.ProjectUnloaded, project: Project("Db")));
 
-        Assert.IsTrue(text.Contains("'Db'"), text);
+        Assert.IsTrue(cause.Contains("'Db'"), cause);
+        Assert.AreEqual("reload it", fix);
     }
 
     [TestMethod]
-    public void ForDenial_NotUnderOpenSolution_MentionsElevation()
+    public void Explain_NotUnderOpenSolution_FixMentionsElevation()
     {
-        Assert.IsTrue(NewFileMessages.ForDenial(Decision(NewFileReason.NotUnderOpenSolution)).Contains("elevation level"));
+        Assert.IsTrue(NewFileMessages.Explain(Decision(NewFileReason.NotUnderOpenSolution)).Fix!.Contains("elevation level"));
     }
 
     [TestMethod]
-    public void ForDenial_UnexpectedReason_GenericText()
+    public void Explain_AlreadyInProject_FixIsGetLatest()
     {
-        var text = NewFileMessages.ForDenial(Decision(NewFileReason.InProjectFolder));
+        Assert.IsTrue(NewFileMessages.Explain(Decision(NewFileReason.AlreadyInProject)).Fix!.Contains("from TFS"));
+    }
 
-        AssertDenialShape(text);
-        Assert.IsTrue(text.Contains("could not be prepared (InProjectFolder)"), text);
+    [TestMethod]
+    public void Explain_UnexpectedReason_GenericCauseNoFix()
+    {
+        var (cause, fix) = NewFileMessages.Explain(Decision(NewFileReason.InProjectFolder));
+
+        Assert.IsTrue(cause.Contains("could not be prepared (InProjectFolder)"), cause);
+        Assert.IsNull(fix);
     }
 
     // ---- NewFileMessages: after the tool ran ----
 
     [TestMethod]
-    public void AddedToProject_NamesPathAndProject()
+    public void AddedToProject_NamesProjectNotPath()
     {
-        var text = NewFileMessages.AddedToProject(FilePath, "App");
+        var text = NewFileMessages.AddedToProject("App");
 
-        Assert.IsTrue(text.Contains(FilePath), text);
         Assert.IsTrue(text.Contains("'App'"), text);
-        Assert.IsTrue(text.Contains("Do not edit the project file"), text);
+        Assert.IsTrue(text.Contains("pending add"), text);
+        Assert.IsTrue(text.Contains("do not edit the project file"), text);
+        Assert.IsFalse(text.Contains(@":\"), text);
     }
 
     [TestMethod]
-    public void OutsideProjects_SaysCreatedButNotInTfvc()
+    public void OutsideProjects_SaysNotInTfvcAndHowToAdd()
     {
-        var text = NewFileMessages.OutsideProjects(FilePath);
+        var text = NewFileMessages.OutsideProjects;
 
-        AssertCreatedNotAddedShape(text);
+        Assert.IsTrue(text.StartsWith("VS Agent Bridge: ", StringComparison.Ordinal), text);
+        Assert.IsTrue(text.Contains("outside all projects"), text);
+        Assert.IsTrue(text.Contains("not in TFVC"), text);
+        Assert.IsTrue(text.Contains("Add > Existing Item"), text);
+        Assert.IsTrue(text.Contains("tell the user: "), text);
     }
 
     [TestMethod]
-    public void NotAdded_UsesTheCauseOfTheDecision()
+    public void ExplainAddFailure_Error_IncludesErrorNoFix()
     {
-        var text = NewFileMessages.NotAdded(FilePath, Decision(NewFileReason.ProjectUnloaded, project: Project("Db")));
+        var (cause, fix) = NewFileMessages.ExplainAddFailure("App", Result(itemFound: false, error: "COMException 0x80004005: boom"));
 
-        AssertCreatedNotAddedShape(text);
-        Assert.IsTrue(text.Contains("project 'Db' is unloaded"), text);
-        Assert.IsTrue(text.Contains("Do not create it again"), text);
+        Assert.IsTrue(cause.Contains("COMException 0x80004005: boom"), cause);
+        Assert.IsTrue(cause.Contains("'App'"), cause);
+        Assert.IsNull(fix);
     }
 
     [TestMethod]
-    public void AddFailed_Error_IncludesError()
+    public void ExplainAddFailure_Copy_NamesTheCopyAndAsksToRemoveIt()
     {
-        var text = NewFileMessages.AddFailed(FilePath, "App", Result(error: "COMException 0x80004005: boom"));
+        var (cause, fix) = NewFileMessages.ExplainAddFailure("App", Result(addedItemPath: @"D:\Src\App\Copy\New.cs"));
 
-        AssertCreatedNotAddedShape(text);
-        Assert.IsTrue(text.Contains("COMException 0x80004005: boom"), text);
+        Assert.IsTrue(cause.Contains(@"a copy at D:\Src\App\Copy\New.cs"), cause);
+        Assert.IsTrue(fix!.Contains("remove that copy"), fix);
     }
 
     [TestMethod]
-    public void AddFailed_Copy_NamesTheCopy()
+    public void ExplainAddFailure_ItemNotFound_SaysSo()
     {
-        var text = NewFileMessages.AddFailed(FilePath, "App", Result(addedItemPath: @"D:\Src\App\Copy\New.cs"));
+        var (cause, fix) = NewFileMessages.ExplainAddFailure("App", Result(itemFound: false));
 
-        Assert.IsTrue(text.Contains(@"a copy at D:\Src\App\Copy\New.cs"), text);
+        Assert.IsTrue(cause.Contains("does not list the file"), cause);
+        Assert.IsNull(fix);
     }
 
     [TestMethod]
-    public void AddFailed_ItemNotFound_SaysSo()
+    public void ExplainAddFailure_NotSaved_SaysSoAndAsksToSave()
     {
-        var text = NewFileMessages.AddFailed(FilePath, "App", Result(itemFound: false));
+        var (cause, fix) = NewFileMessages.ExplainAddFailure("App", Result(projectSaved: false));
 
-        Assert.IsTrue(text.Contains("does not list the file"), text);
-    }
-
-    [TestMethod]
-    public void AddFailed_NotSaved_SaysSo()
-    {
-        var text = NewFileMessages.AddFailed(FilePath, "App", Result(projectSaved: false));
-
-        Assert.IsTrue(text.Contains("could not be saved"), text);
+        Assert.IsTrue(cause.Contains("could not be saved"), cause);
+        Assert.AreEqual("save project 'App' in Visual Studio", fix);
     }
 
     // ---- AddToProjectResult ----
@@ -228,31 +276,18 @@ internal sealed class NewFileResponseAndMessagesTests
 
     // ---- Helpers ----
 
-    private static void AssertDenialShape(string text)
-    {
-        Assert.IsTrue(text.StartsWith("VS Agent Bridge blocked creating this file: ", StringComparison.Ordinal), text);
-        Assert.IsTrue(text.Contains("The file was not created."), text);
-        Assert.IsTrue(text.Contains("with any tool"), text);
-        Assert.IsTrue(text.Contains("tell the user: "), text);
-    }
-
-    private static void AssertCreatedNotAddedShape(string text)
-    {
-        Assert.IsTrue(text.StartsWith("VS Agent Bridge: ", StringComparison.Ordinal), text);
-        Assert.IsTrue(text.Contains(FilePath + " was created"), text);
-        Assert.IsTrue(text.Contains("not in TFVC"), text);
-        Assert.IsTrue(text.Contains("Add > Existing Item"), text);
-        Assert.IsTrue(text.Contains("tell the user: "), text);
-    }
-
     private static NewFileDecision Decision(
         NewFileReason reason,
         IReadOnlyList<string>? instances = null,
         VsProjectFacts? project = null,
-        IReadOnlyList<VsProjectFacts>? projectsInFolder = null) =>
-        new(NewFileAction.Deny, reason, new TfvcPathClassification(TfvcPathStatus.ServerWorkspace, null, null, null),
-            instances: instances ?? new[] { "17.0/pid1" }, project: project ?? Project("App"),
+        IReadOnlyList<VsProjectFacts>? projectsInFolder = null,
+        IReadOnlyList<VsSolutionFacts>? solutions = null) =>
+        new(NewFileAction.Redirect, reason, new TfvcPathClassification(TfvcPathStatus.ServerWorkspace, null, null, null),
+            solutions: solutions, instances: instances ?? new[] { "17.0/pid1" }, project: project ?? Project("App"),
             projectsInFolder: projectsInFolder);
+
+    private static VsSolutionFacts Solution(string instance, string solutionPath) =>
+        new(instance, solutionPath, Array.Empty<VsProjectFacts>(), containsPath: false, error: null);
 
     private static VsProjectFacts Project(string name) =>
         new(name, $@"D:\Src\{name}\{name}.csproj", $@"D:\Src\{name}", isLoaded: true);

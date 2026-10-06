@@ -5,17 +5,19 @@ namespace VSAgentBridge.Logic;
 
 /// <summary>
 /// Response of "vsagentbridge hook":
-/// {"decision":"allow","reason":"..."}, optionally with "message" and/or "after":true,
-/// or {"decision":"deny","reason":"...","message":"..."}.
+/// {"decision":"allow","reason":"..."}, optionally with "message" and/or "after":true;
+/// {"decision":"deny","reason":"...","message":"..."};
+/// {"decision":"redirect","reason":"...","path":"...","message":"..."}.
 /// </summary>
 internal sealed class HookResponse
 {
-    private HookResponse(bool allowed, string reason, string? message, bool callAfter)
+    private HookResponse(HookDecision decision, string reason, string? message, bool callAfter, string? redirectPath)
     {
-        Allowed = allowed;
+        Decision = decision;
         Reason = reason;
         Message = message;
         CallAfter = callAfter;
+        RedirectPath = redirectPath;
     }
 
     /// <param name="reason">Machine-readable cause.</param>
@@ -28,20 +30,44 @@ internal sealed class HookResponse
     /// once the tool has completed successfully.
     /// </param>
     public static HookResponse Allow(string reason, string? message = null, bool callAfter = false) =>
-        new(true, reason, message, callAfter);
+        new(HookDecision.Allow, reason, message, callAfter, redirectPath: null);
 
-    public static HookResponse Deny(string reason, string message) => new(false, reason, message, callAfter: false);
+    public static HookResponse Deny(string reason, string message) =>
+        new(HookDecision.Deny, reason, message, callAfter: false, redirectPath: null);
 
-    public bool Allowed { get; }
+    /// <param name="path">Absolute path the tool must use instead of the one the model gave.</param>
+    /// <param name="message">
+    /// Text the adapter appends to the tool's result once the tool has completed successfully;
+    /// it tells the model where the file really is. Given already with "before", so that no second call is needed.
+    /// </param>
+    public static HookResponse Redirect(string reason, string path, string message) =>
+        new(HookDecision.Redirect, reason, message, callAfter: false, redirectPath: path);
+
+    public HookDecision Decision { get; }
+
+    /// <summary>The tool runs as requested (the only verdict that leaves the input untouched).</summary>
+    public bool Allowed => Decision == HookDecision.Allow;
 
     /// <summary>Machine-readable cause (EditReason / NewFileReason name, CheckedOut, AddedToProject, ...); for adapters and logs.</summary>
     public string Reason { get; }
 
-    /// <summary>Text for the model: why the tool was blocked, or what happened after it ran.</summary>
+    /// <summary>Text for the model: why the tool was blocked, where the file went, or what happened after it ran.</summary>
     public string? Message { get; }
 
     /// <summary>The adapter must send an "after" request when the tool completes successfully.</summary>
     public bool CallAfter { get; }
+
+    /// <summary>Set only for <see cref="HookDecision.Redirect"/>: where the tool must read or write instead.</summary>
+    public string? RedirectPath { get; }
+
+    /// <summary>Verdict as written to JSON and to the log: "allow", "deny" or "redirect".</summary>
+    public string DecisionName => Decision switch
+    {
+        HookDecision.Allow => "allow",
+        HookDecision.Deny => "deny",
+        HookDecision.Redirect => "redirect",
+        _ => throw new ArgumentOutOfRangeException(nameof(Decision), Decision, "Unknown decision."),
+    };
 
     public string ToJson()
     {
@@ -51,8 +77,10 @@ internal sealed class HookResponse
         using (var writer = new Utf8JsonWriter(buffer))
         {
             writer.WriteStartObject();
-            writer.WriteString("decision", Allowed ? "allow" : "deny");
+            writer.WriteString("decision", DecisionName);
             writer.WriteString("reason", Reason);
+            if (RedirectPath != null)
+                writer.WriteString("path", RedirectPath);
             if (Message != null)
                 writer.WriteString("message", Message);
             if (CallAfter)
