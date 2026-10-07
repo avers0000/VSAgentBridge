@@ -4,12 +4,19 @@ using System.Text;
 namespace VSAgentBridge.Logic;
 
 /// <summary>
-/// Disk work for redirection into one session folder under Output (slice 3 results, §1.3, §1.5):
-/// creates the folder and its _vsab-session.txt, copies originals, clears read-only on copies.
-/// No COM. Paths come from <see cref="OutputLayout"/>.
+/// Disk work in one session folder under Output: creates the folder and its _vsab-session.txt, copies originals
+/// and clears read-only on copies (redirection, slice 3 results, §1.3, §1.5), and records refused deletes and
+/// moves in _pending-operations.txt (slice 4 results, §1.6). No COM. Paths come from <see cref="OutputLayout"/>.
 /// </summary>
 internal sealed class OutputStore
 {
+    // A request of a few lines is enough to see what the agent wanted; a script pasted into a command is cut.
+    private const int MaxRecordedRequestLength = 2000;
+
+    // Two hook processes of one session may append at once; the second waits for the first.
+    private const int RecordAttempts = 20;
+    private const int RecordRetryDelayMs = 50;
+
     private readonly string _sessionFolder;
     private readonly string? _session;
     private readonly string? _harness;
@@ -58,6 +65,43 @@ internal sealed class OutputStore
             return new OutputResult(targetPath, copied: true, reused: existed, error: null);
         });
 
+    /// <summary>Where <see cref="RecordPendingOperation"/> appends.</summary>
+    public string PendingOperationsPath => Path.Combine(_sessionFolder, OutputLayout.PendingOperationsFileName);
+
+    /// <summary>
+    /// A delete or move was refused: appends what the agent asked for, so that the user sees it whatever the model
+    /// says at the end of its answer. Creates the session folder (with its info file) if needed.
+    /// </summary>
+    /// <param name="tool">Harness tool name (shell, patch, ...).</param>
+    /// <param name="request">The command or the patch operation as the agent gave it.</param>
+    /// <param name="details">One line each: what was found, with paths where known.</param>
+    /// <returns>null when recorded; otherwise why not (the refusal stands anyway).</returns>
+    public string? RecordPendingOperation(string tool, string request, IEnumerable<string> details)
+    {
+        var entry = new StringBuilder()
+            .Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture))
+            .Append("  ").Append(_harness ?? "(unknown)")
+            .Append("  ").AppendLine(tool);
+
+        foreach (var line in Indent(Shorten(request.Trim())))
+            entry.Append("  > ").AppendLine(line);
+        foreach (var detail in details)
+            entry.Append("  ").AppendLine(detail);
+        entry.AppendLine();
+
+        try
+        {
+            EnsureSessionFolder();
+            AppendWithRetry(PendingOperationsPath, entry.ToString());
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException
+                                   || ex is ArgumentException || ex is NotSupportedException)
+        {
+            return $"{ex.GetType().Name}: {ex.Message}";
+        }
+    }
+
     // Creates the session folder (with its info file) and the target's folder, then does the work.
     // Disk errors become a result: the hook turns them into a denial instead of crashing.
     private OutputResult Run(string targetPath, Func<OutputResult> work)
@@ -85,10 +129,15 @@ internal sealed class OutputStore
             return;
 
         var text = new StringBuilder()
-            .AppendLine("VS Agent Bridge session folder: files the agent could not write in place.")
-            .AppendLine("Each file here is the latest version from this session. Apply it to the same relative path under cwd")
-            .AppendLine("(files under _outside: to the full path shown by their folders) by comparing it with the original")
-            .AppendLine("there, not by copying over it: the original may have changed while the session worked on the copy.")
+            .AppendLine("VS Agent Bridge session folder: what this agent session could not do in place.")
+            .AppendLine()
+            .AppendLine(OutputLayout.PendingOperationsFileName + " (if present): deletes, moves and renames the bridge refused;")
+            .AppendLine("do them in Visual Studio.")
+            .AppendLine()
+            .AppendLine("Every other file is the latest version from this session of a file it could not write in place.")
+            .AppendLine("Apply it to the same relative path under cwd (files under _outside: to the full path shown by")
+            .AppendLine("their folders) by comparing it with the original there, not by copying over it: the original")
+            .AppendLine("may have changed while the session worked on the copy.")
             .AppendLine()
             .AppendLine("session: " + (_session ?? "(none)"))
             .AppendLine("harness: " + (_harness ?? "(unknown)"))
@@ -109,6 +158,33 @@ internal sealed class OutputStore
             // Written by a parallel call meanwhile: fine.
         }
     }
+
+    // Append under an exclusive lock (as the log does); a sharing violation means another hook process is appending right now.
+    // A new file gets a UTF-8 BOM (StreamWriter writes it at position 0 only), so that Notepad shows paths in any language.
+    private static void AppendWithRetry(string path, string text)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.None);
+                using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+                writer.Write(text);
+                return;
+            }
+            catch (IOException) when (attempt < RecordAttempts && File.Exists(path))
+            {
+                Thread.Sleep(RecordRetryDelayMs);
+            }
+        }
+    }
+
+    private static string Shorten(string text) =>
+        text.Length <= MaxRecordedRequestLength ? text : text.Substring(0, MaxRecordedRequestLength) + " [...]";
+
+    // A multi-line command keeps its lines, each marked as part of the request.
+    private static IEnumerable<string> Indent(string text) =>
+        text.Replace("\r\n", "\n").Split('\n').Select(l => l.TrimEnd('\r'));
 
     private static void CopyFresh(string sourcePath, string targetPath, bool overwrite)
     {

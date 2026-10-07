@@ -19,6 +19,9 @@ internal static class OutputLayout
     /// <summary>Written once into each session folder: where its files come from.</summary>
     public const string SessionInfoFileName = "_vsab-session.txt";
 
+    /// <summary>Appended to in each session folder: the deletes and moves the bridge refused (slice 4 results, §1.6).</summary>
+    public const string PendingOperationsFileName = "_pending-operations.txt";
+
     // Long enough for any real session id (OpenCode: "ses_" + 26 characters), short enough to keep paths short.
     private const int MaxSessionFolderLength = 64;
 

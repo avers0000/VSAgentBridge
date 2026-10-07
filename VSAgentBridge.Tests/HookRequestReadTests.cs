@@ -34,9 +34,9 @@ internal sealed class HookRequestReadTests
     }
 
     [TestMethod]
-    public void Parse_UnsupportedEvent_ListsAllThree()
+    public void Parse_UnsupportedEvent_ListsAllEvents()
     {
-        Assert.IsNull(HookRequest.Parse("""{"event":"delete","tool":"edit","path":"C:\\x.txt"}""", out var error));
-        Assert.IsTrue(error.Contains("'before', 'after' or 'read'"), error);
+        Assert.IsNull(HookRequest.Parse("""{"event":"remove","tool":"edit","path":"C:\\x.txt"}""", out var error));
+        Assert.IsTrue(error.Contains("'before', 'after', 'read', 'shell', 'delete', 'rename'"), error);
     }
 }

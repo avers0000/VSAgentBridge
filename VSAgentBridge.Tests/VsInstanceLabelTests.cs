@@ -24,9 +24,9 @@ internal sealed class VsInstanceLabelTests
     [TestMethod]
     public void Describe_WithSolution_AddsFileNameOnly()
     {
-        var text = VsInstanceLabel.Describe("16.0/pid16616", @"D:\Src\Executables\SubscriberDataUploader.sln");
+        var text = VsInstanceLabel.Describe("16.0/pid16616", @"D:\Src\Tools\SampleApp.sln");
 
-        Assert.AreEqual("VS2019 (pid 16616): SubscriberDataUploader.sln", text);
+        Assert.AreEqual("VS2019 (pid 16616): SampleApp.sln", text);
     }
 
     [TestMethod]

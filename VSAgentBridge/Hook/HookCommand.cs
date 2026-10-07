@@ -14,6 +14,7 @@ namespace VSAgentBridge.Hook;
 /// the session folder under Output (slice 3).
 /// "after": the new file was written → decide again and add it to its project; if that fails, copy it to Output.
 /// "read": a path that has a copy in this session is read from the copy.
+/// "shell": a command that deletes, moves or writes files is refused (slice 4); "delete"/"rename" (a patch) likewise.
 /// stdout carries only the response; diagnostics go to stderr and the log.
 /// Exit code 0 whenever a response was written (allow, deny or redirect); 1 for an invalid request.
 /// </summary>
@@ -39,6 +40,12 @@ internal static class HookCommand
     private const string ReasonNoSessionCopy = "NoSessionCopy";
     private const string ReasonInOutput = "InOutput";
     private const string ReasonOutputFailed = "OutputFailed";
+    private const string ReasonNoFileChange = "NoFileChange";
+    private const string ReasonDeleteOrMoveRefused = "DeleteOrMoveRefused";
+    private const string ReasonWriteRefused = "WriteRefused";
+
+    // A command can be a whole script; the log keeps its start.
+    private const int MaxLoggedCommandChars = 1000;
 
     public static int Run()
     {
@@ -91,6 +98,12 @@ internal static class HookCommand
         try
         {
             var cwd = request.Cwd ?? Environment.CurrentDirectory;
+
+            // Slice 4: no file to check out or redirect; nothing here needs Visual Studio.
+            if (request.IsShell)
+                return HandleShell(request, cwd, outputDir, log, out importance);
+            if (request.IsDelete || request.IsRename)
+                return HandleDeleteOrMove(request, cwd, outputDir, log, out importance);
 
             string path;
             try
@@ -154,8 +167,110 @@ internal static class HookCommand
             if (request.IsRead)
                 return HookResponse.Allow(ReasonInternalError);
 
+            // A failure of the bridge is critical for commands too (slice 4 results, §1.4); a delete or move
+            // would be refused anyway, so its own text tells the model what to do.
+            if (request.IsShell)
+                return HookResponse.Deny(ReasonInternalError, ShellMessages.InternalError);
+            if (request.IsDelete || request.IsRename)
+                return HookResponse.Deny(ReasonInternalError,
+                    ShellMessages.DeleteOrMovePatch(request.IsDelete ? ShellOperation.Delete : ShellOperation.Move, recordPath: null));
+
             return HookResponse.Deny(ReasonInternalError,
                 creating ? HookMessages.InternalErrorNewFile : HookMessages.InternalError);
+        }
+    }
+
+    // ---- Shell, delete, rename (slice 4) ----
+
+    // Deletes and moves are refused and recorded for the user; writes are refused with a pointer to the write/edit
+    // tools; anything else runs. The command itself is never changed.
+    private static HookResponse HandleShell(
+        HookRequest request, string cwd, string outputDir, HookLog log, out LogVerbosity importance)
+    {
+        var command = request.Command!;
+        log.Add("command", command.Length > MaxLoggedCommandChars ? command.Substring(0, MaxLoggedCommandChars) + "..." : command);
+        log.Add("workdir", request.Workdir);
+
+        var findings = ShellCommandScanner.Scan(command);
+        if (findings.Count == 0)
+        {
+            importance = LogVerbosity.All;
+            return HookResponse.Allow(ReasonNoFileChange);
+        }
+
+        log.Add("found", string.Join(",", findings.Select(f => $"{f.Operation}:{f.Command}")));
+        importance = LogVerbosity.Issues;
+
+        if (!findings.Any(f => f.IsDeleteOrMove))
+            return HookResponse.Deny(ReasonWriteRefused, ShellMessages.WriteCommand(findings));
+
+        // Paths in the record are full, from the folder the command runs in; the model sees none of them.
+        var baseDir = request.Workdir != null ? ResolvePath(request.Workdir, cwd) : cwd;
+        var details = findings.Select(f =>
+            $"{ShellMessages.Verb(f.Operation)}: {f.Command}" +
+            (f.Paths.Count > 0 ? " " + string.Join(", ", f.Paths.Select(p => ResolvePath(p, baseDir))) : ""));
+
+        var record = Record(request, outputDir, command, details, log);
+        return HookResponse.Deny(ReasonDeleteOrMoveRefused, ShellMessages.DeleteOrMoveCommand(findings, record));
+    }
+
+    // A patch deletes or moves a file: the whole patch is refused, the operation recorded for the user.
+    private static HookResponse HandleDeleteOrMove(
+        HookRequest request, string cwd, string outputDir, HookLog log, out LogVerbosity importance)
+    {
+        var path = ResolvePath(request.FilePath, cwd);
+        log.Add("path", path);
+
+        string operation;
+        if (request.IsDelete)
+        {
+            operation = $"delete {path}";
+        }
+        else
+        {
+            var newPath = ResolvePath(request.NewPath!, cwd);
+            log.Add("newPath", newPath);
+            operation = $"move {path} -> {newPath}";
+        }
+
+        importance = LogVerbosity.Issues;
+        var record = Record(request, outputDir, operation, Array.Empty<string>(), log);
+        var kind = request.IsDelete ? ShellOperation.Delete : ShellOperation.Move;
+        return HookResponse.Deny(ReasonDeleteOrMoveRefused, ShellMessages.DeleteOrMovePatch(kind, record));
+    }
+
+    // The record of the refused request in the session folder; null (and the reason in the log) if it failed.
+    private static string? Record(HookRequest request, string outputDir, string what, IEnumerable<string> details, HookLog log)
+    {
+        var store = new OutputStore(
+            OutputLayout.SessionFolder(outputDir, request.Session), request.Session, request.Harness, request.Cwd);
+
+        var error = store.RecordPendingOperation(request.Tool, what, details);
+        if (error != null)
+        {
+            log.Add("pendingError", error);
+            return null;
+        }
+
+        log.Add("pending", store.PendingOperationsPath);
+        return store.PendingOperationsPath;
+    }
+
+    // Full path for the record and the log; as written when it is not a path .NET accepts (masks, odd characters).
+    // A Git Bash path (/d/work/x.cs) is read as D:\work\x.cs.
+    private static string ResolvePath(string path, string baseDir)
+    {
+        var p = path.Length >= 3 && path[0] == '/' && char.IsLetter(path[1]) && path[2] == '/'
+            ? char.ToUpperInvariant(path[1]) + @":\" + path.Substring(3).Replace('/', '\\')
+            : path;
+
+        try
+        {
+            return PathUtil.ToFullPath(p, baseDir);
+        }
+        catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
+        {
+            return path;
         }
     }
 

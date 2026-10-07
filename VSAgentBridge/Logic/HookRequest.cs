@@ -8,15 +8,23 @@ namespace VSAgentBridge.Logic;
 /// Adapters translate harness events into it.
 /// "before" comes before a tool writes the file; "after" comes after it completed successfully, and only when
 /// the response to "before" asked for it ("after": true); "read" comes before a tool reads the file.
-/// All three carry the same fields.
+/// "shell" comes before a shell command runs ("command", optional "workdir"; no "path").
+/// "delete" and "rename" come before a tool deletes or moves a file ("path"; "rename" also "newPath"):
+/// a patch's "*** Delete File" and "*** Move to" (slice 4 results, §1.2).
 /// </summary>
 internal sealed class HookRequest
 {
     public const string BeforeEvent = "before";
     public const string AfterEvent = "after";
     public const string ReadEvent = "read";
+    public const string ShellEvent = "shell";
+    public const string DeleteEvent = "delete";
+    public const string RenameEvent = "rename";
 
-    public HookRequest(string @event, string tool, string filePath, string? cwd, string? harness, string? session)
+    private static readonly string[] Events = { BeforeEvent, AfterEvent, ReadEvent, ShellEvent, DeleteEvent, RenameEvent };
+
+    public HookRequest(string @event, string tool, string filePath, string? cwd, string? harness, string? session,
+        string? command = null, string? workdir = null, string? newPath = null)
     {
         Event = @event;
         Tool = tool;
@@ -24,9 +32,12 @@ internal sealed class HookRequest
         Cwd = cwd;
         Harness = harness;
         Session = session;
+        Command = command;
+        Workdir = workdir;
+        NewPath = newPath;
     }
 
-    /// <summary>"before", "after" or "read".</summary>
+    /// <summary>One of the event names above.</summary>
     public string Event { get; }
 
     public bool IsAfter => Event == AfterEvent;
@@ -37,10 +48,19 @@ internal sealed class HookRequest
     /// </summary>
     public bool IsRead => Event == ReadEvent;
 
-    /// <summary>Harness tool name (edit, write, read, Edit, ...); a log label only: the bridge never interprets it.</summary>
+    /// <summary>A shell command is about to run: <see cref="Command"/> is set, <see cref="FilePath"/> is empty.</summary>
+    public bool IsShell => Event == ShellEvent;
+
+    /// <summary>A tool is about to delete <see cref="FilePath"/>.</summary>
+    public bool IsDelete => Event == DeleteEvent;
+
+    /// <summary>A tool is about to move or rename <see cref="FilePath"/> to <see cref="NewPath"/>.</summary>
+    public bool IsRename => Event == RenameEvent;
+
+    /// <summary>Harness tool name (edit, write, read, shell, Edit, Bash, ...); a log label only: the bridge never interprets it.</summary>
     public string Tool { get; }
 
-    /// <summary>File path as the model gave it: absolute or relative to <see cref="Cwd"/>.</summary>
+    /// <summary>File path as the model gave it: absolute or relative to <see cref="Cwd"/>. Empty for "shell".</summary>
     public string FilePath { get; }
 
     /// <summary>
@@ -57,6 +77,15 @@ internal sealed class HookRequest
     /// never mix; also logged (several agent sessions may run at once).
     /// </summary>
     public string? Session { get; }
+
+    /// <summary>"shell": the command line as the model gave it.</summary>
+    public string? Command { get; }
+
+    /// <summary>"shell": the folder the command runs in, if the tool has one (absolute or relative to <see cref="Cwd"/>).</summary>
+    public string? Workdir { get; }
+
+    /// <summary>"rename": the new path, as the model gave it.</summary>
+    public string? NewPath { get; }
 
     /// <summary>Returns the request, or null and the reason if the JSON is not a valid request.</summary>
     public static HookRequest? Parse(string json, out string error)
@@ -85,21 +114,30 @@ internal sealed class HookRequest
             var tool = GetString(root, "tool");
             var path = GetString(root, "path");
             var cwd = GetString(root, "cwd");
+            var command = GetString(root, "command");
+            var newPath = GetString(root, "newPath");
+            var isShell = ev == ShellEvent;
 
             if (ev == null)
                 error = "'event' is missing or not a string";
-            else if (ev != BeforeEvent && ev != AfterEvent && ev != ReadEvent)
-                error = $"unsupported event '{ev}' (expected '{BeforeEvent}', '{AfterEvent}' or '{ReadEvent}')";
+            else if (Array.IndexOf(Events, ev) < 0)
+                error = $"unsupported event '{ev}' (expected '{string.Join("', '", Events)}')";
             else if (string.IsNullOrEmpty(tool))
                 error = "'tool' is missing or not a string";
-            else if (string.IsNullOrWhiteSpace(path))
+            else if (isShell && string.IsNullOrWhiteSpace(command))
+                error = "'command' is missing or empty";
+            else if (!isShell && string.IsNullOrWhiteSpace(path))
                 error = "'path' is missing or empty";
+            else if (ev == RenameEvent && string.IsNullOrWhiteSpace(newPath))
+                error = "'newPath' is missing or empty";
             else if (cwd != null && !Path.IsPathRooted(cwd))
                 error = "'cwd' must be an absolute path";
             else
             {
                 error = "";
-                return new HookRequest(ev, tool!, path!, cwd, GetString(root, "harness"), GetString(root, "session"));
+                return new HookRequest(ev, tool!, isShell ? "" : path!, cwd, GetString(root, "harness"),
+                    GetString(root, "session"), isShell ? command : null, isShell ? GetString(root, "workdir") : null,
+                    ev == RenameEvent ? newPath : null);
             }
 
             return null;
