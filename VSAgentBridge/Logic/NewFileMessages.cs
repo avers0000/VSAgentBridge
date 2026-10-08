@@ -5,20 +5,24 @@
 /// created but not added is copied there: <see cref="RedirectMessages"/> builds those texts from <see cref="Explain"/>
 /// and <see cref="ExplainAddFailure"/>. The two notes appended after a successful creation stay here.
 /// Texts are kept short (slice 3 results, §4.1); the file path is not repeated (the model gave it).
+/// TFVC is mentioned only when the path is under TFVC: the logic is the same for any version control.
 /// </summary>
 internal static class NewFileMessages
 {
-    /// <summary>"after": the file was added to the project; Visual Studio made it a pending add.</summary>
+    /// <summary>
+    /// "after": the file was added to the project. Source control (a pending add in TFVC, for instance)
+    /// is Visual Studio's business, not the bridge's, so the text does not claim it.
+    /// </summary>
     public static string AddedToProject(string projectName) =>
-        $"VS Agent Bridge added the file to project '{projectName}' (pending add in TFVC); " +
+        $"VS Agent Bridge added the file to project '{projectName}' through Visual Studio; " +
         "do not edit the project file to include it.";
 
     /// <summary>"after": created in place, but outside all projects of the solution.</summary>
-    public const string OutsideProjects =
-        "VS Agent Bridge: the file lies outside all projects of the open solution, so it is in no project and not in TFVC; " +
-        "do not edit project files to include it. At the end of your answer tell the user: " +
-        "the new file is in no project and not in TFVC; if it is needed, add it in Visual Studio (" +
-        RedirectMessages.AddByHand + ").";
+    public static string OutsideProjects(bool underTfvc) =>
+        "VS Agent Bridge: the file lies outside all projects of the open solution, so it is " +
+        RedirectMessages.InNoProject(underTfvc) + "; do not edit project files to include it. " +
+        "At the end of your answer tell the user: the new file is " + RedirectMessages.InNoProject(underTfvc) +
+        $"; if it is needed, add it in Visual Studio ({RedirectMessages.AddByHand}).";
 
     /// <summary>
     /// Why the file cannot be created and added in place, and what the user does before putting the copy in place
@@ -28,7 +32,7 @@ internal static class NewFileMessages
     public static (string Cause, string? Fix) Explain(NewFileDecision d) => d.Reason switch
     {
         NewFileReason.NotUnderOpenSolution => (
-            "the folder is in a TFVC workspace, but no open Visual Studio solution contains it.",
+            "no open Visual Studio solution contains this folder.",
             $"open the solution with this folder in Visual Studio ({HookMessages.Elevation})"),
 
         NewFileReason.SeveralInstances => (
@@ -40,9 +44,11 @@ internal static class NewFileMessages
             $"Visual Studio did not answer ({DescribeInstances(d)}; busy or just closed).",
             "make sure Visual Studio is open and responsive"),
 
-        NewFileReason.AlreadyInProject => (
-            "a project already lists this file, but it is missing on disk (deleted locally or not yet got from TFS).",
-            "get the latest version of the original from TFS"),
+        NewFileReason.AlreadyInProject => d.Tfvc.IsUnderTfvc
+            ? ("a project already lists this file, but it is missing on disk (deleted locally or not yet got from TFS).",
+               "get the latest version of the original from TFS")
+            : ("a project already lists this file, but it is missing on disk (deleted or not restored).",
+               "restore the original (from source control, if the folder uses it)"),
 
         NewFileReason.SeveralProjectsInFolder => (
             $"several projects share this folder ({string.Join(", ", d.ProjectsInFolder.Select(p => p.Name))}), " +

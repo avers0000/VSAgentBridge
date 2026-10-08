@@ -19,6 +19,12 @@ internal sealed class TfvcPathClassification
 
     public TfvcPathStatus Status { get; }
 
+    /// <summary>
+    /// The path is in a TFVC workspace of this machine, server or local. Texts for the model mention TFVC
+    /// only then; the two kinds differ in behaviour only in the checkout of existing files.
+    /// </summary>
+    public bool IsUnderTfvc => Status != TfvcPathStatus.NotMapped;
+
     /// <summary>The workspace whose mapping contains the path; null when not mapped.</summary>
     public TfvcWorkspace? Workspace { get; }
 

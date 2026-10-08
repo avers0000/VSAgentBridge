@@ -4,9 +4,9 @@
 internal enum NewFileAction
 {
     /// <summary>
-    /// Let the tool through and do nothing afterwards: the path is not in a TFVC server workspace,
-    /// or a project of an open solution already lists it (in "before" the hook redirects that case:
-    /// the file is missing on disk, so creating it in place would bypass TFVC).
+    /// Do nothing: a project of the working solution already lists the path. In "before" the hook redirects
+    /// that case (the file is missing on disk, so creating it in place would bypass the project and source control);
+    /// in "after" it lets it pass (an SDK-style project picked the file up through a wildcard).
     /// </summary>
     None,
 
@@ -18,7 +18,7 @@ internal enum NewFileAction
 
     /// <summary>
     /// Let the tool through without adding: the path is under an open solution but outside all its projects.
-    /// The "after" call tells the model the file is in no project and not in TFVC.
+    /// The "after" call tells the model the file is in no project (and, under TFVC, not in TFVC).
     /// </summary>
     LeaveOutsideProjects,
 

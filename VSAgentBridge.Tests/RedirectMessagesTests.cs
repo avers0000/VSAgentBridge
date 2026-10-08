@@ -49,7 +49,7 @@ internal sealed class RedirectMessagesTests
     [TestMethod]
     public void NewFile_AddToProject_SaysAddExistingItemFromTheCopy()
     {
-        var text = RedirectMessages.NewFile(Copy, "the cause.", "the fix", addToProject: true);
+        var text = RedirectMessages.NewFile(Copy, "the cause.", "the fix", addToProject: true, underTfvc: true);
 
         Assert.IsTrue(text.StartsWith("VS Agent Bridge created this file in a session copy instead: the cause.", StringComparison.Ordinal), text);
         Assert.IsTrue(text.Contains("Nothing was created at the original path."), text);
@@ -63,7 +63,7 @@ internal sealed class RedirectMessagesTests
     [TestMethod]
     public void NewFile_AlreadyInProject_SaysMerge()
     {
-        var text = RedirectMessages.NewFile(Copy, "the cause.", "the fix", addToProject: false);
+        var text = RedirectMessages.NewFile(Copy, "the cause.", "the fix", addToProject: false, underTfvc: true);
 
         Assert.IsTrue(text.EndsWith("the fix, then merge it into the original by comparing them, not by copying over it.", StringComparison.Ordinal), text);
         Assert.IsFalse(text.Contains("Add > Existing Item"), text);
@@ -78,7 +78,7 @@ internal sealed class RedirectMessagesTests
             solutions: null, instances: Array.Empty<string>(), project: null, projectsInFolder: null);
         var (cause, fix) = NewFileMessages.Explain(decision);
 
-        var text = RedirectMessages.NewFile(Copy, cause, fix, addToProject: true);
+        var text = RedirectMessages.NewFile(Copy, cause, fix, addToProject: true, underTfvc: true);
 
         Assert.IsTrue(text.Length - Copy.Length <= NewFileBudget, $"{text.Length - Copy.Length}: {text}");
     }
@@ -104,7 +104,7 @@ internal sealed class RedirectMessagesTests
     [TestMethod]
     public void CreatedNotAdded_WithCopy_KeepsTheSessionOnTheCopy()
     {
-        var text = RedirectMessages.CreatedNotAdded("the cause.", "the fix", Copy, copyError: null);
+        var text = RedirectMessages.CreatedNotAdded("the cause.", "the fix", Copy, copyError: null, underTfvc: true);
 
         Assert.IsTrue(text.StartsWith("VS Agent Bridge: the file was created but not added to a project: the cause.", StringComparison.Ordinal), text);
         Assert.IsTrue(text.Contains("The bridge also saved a session copy of it."), text);
@@ -118,13 +118,69 @@ internal sealed class RedirectMessagesTests
     [TestMethod]
     public void CreatedNotAdded_CopyFailed_NamesErrorAndDoesNotPromiseACopy()
     {
-        var text = RedirectMessages.CreatedNotAdded("the cause.", fix: null, copy: null, copyError: "IOException: disk full");
+        var text = RedirectMessages.CreatedNotAdded("the cause.", fix: null, copy: null, copyError: "IOException: disk full", underTfvc: true);
 
         Assert.IsTrue(text.Contains("IOException: disk full"), text);
         Assert.IsTrue(text.Contains("add it in Visual Studio (Add > Existing Item)."), text);
         Assert.IsFalse(text.Contains("go to the copy"), text);
         Assert.IsFalse(text.Contains(", then"), text);
         AssertNoDelete(text);
+    }
+
+    // ---- VCS independence: TFVC is mentioned only when the path is under TFVC ----
+
+    [TestMethod]
+    [DataRow(true, "in no project and not in TFVC")]
+    [DataRow(false, "in no project")]
+    public void InNoProject_DependsOnTfvc(bool underTfvc, string expected)
+    {
+        Assert.AreEqual(expected, RedirectMessages.InNoProject(underTfvc));
+    }
+
+    [TestMethod]
+    public void NewFile_NotUnderTfvc_DoesNotMentionTfvc()
+    {
+        var text = RedirectMessages.NewFile(Copy, "the cause.", "the fix", addToProject: true, underTfvc: false);
+
+        Assert.IsTrue(text.Contains($"created the new file as {Copy}; it is in no project; the fix, then in Solution Explorer"), text);
+        Assert.IsFalse(text.Contains("TFVC"), text);
+    }
+
+    [TestMethod]
+    public void CreatedNotAdded_UnderTfvc_SaysNotInTfvc()
+    {
+        var text = RedirectMessages.CreatedNotAdded("the cause.", "the fix", Copy, copyError: null, underTfvc: true);
+
+        Assert.IsTrue(text.Contains("It is in no project and not in TFVC; do not create it again"), text);
+    }
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public void CreatedNotAdded_NotUnderTfvc_DoesNotMentionTfvc(bool withCopy)
+    {
+        var text = withCopy
+            ? RedirectMessages.CreatedNotAdded("the cause.", "the fix", Copy, copyError: null, underTfvc: false)
+            : RedirectMessages.CreatedNotAdded("the cause.", "the fix", copy: null, copyError: "IOException: x", underTfvc: false);
+
+        Assert.IsTrue(text.Contains("It is in no project; do not create it again"), text);
+        Assert.IsFalse(text.Contains("TFVC"), text);
+    }
+
+    // A real new-file text outside TFVC: no cause, fix or tail mentions TFVC or TFS.
+    [TestMethod]
+    [DataRow(NewFileReason.NotUnderOpenSolution)]
+    [DataRow(NewFileReason.AlreadyInProject)]
+    public void NewFile_RealTextNotUnderTfvc_NoTfvcOrTfs(NewFileReason reason)
+    {
+        var decision = new NewFileDecision(NewFileAction.Redirect, reason, TfvcPathClassification.NotMapped,
+            solutions: null, instances: Array.Empty<string>(), project: null, projectsInFolder: null);
+        var (cause, fix) = NewFileMessages.Explain(decision);
+
+        var text = RedirectMessages.NewFile(Copy, cause, fix,
+            addToProject: reason != NewFileReason.AlreadyInProject, decision.Tfvc.IsUnderTfvc);
+
+        Assert.IsFalse(text.Contains("TFVC") || text.Contains("TFS"), text);
     }
 
     [TestMethod]

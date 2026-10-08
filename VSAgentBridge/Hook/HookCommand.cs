@@ -384,7 +384,7 @@ internal static class HookCommand
             : HookResponse.Deny(ReasonOutputFailed, RedirectMessages.OutputFailed(cause, result.Error!, isNewFile: false));
     }
 
-    // ---- New file (slice 2) ----
+    // ---- New file (slice 2; the same for any version control since the VCS-independence fix) ----
 
     private static HookResponse HandleNewFileBefore(
         string path, string target, OutputStore output, HookLog log, out LogVerbosity importance)
@@ -392,15 +392,15 @@ internal static class HookCommand
         log.Add("exists", false);
         var (decision, _) = DecideNewFile(path, log);
 
-        // The solution already lists a file that is missing on disk (deleted locally, not yet got from TFS):
-        // creating it anew would be a change TFVC does not know about (slice 2 results, §1.4a).
+        // The solution already lists a file that is missing on disk (deleted locally, not yet got from source control):
+        // creating it anew would bypass the project and source control (slice 2 results, §1.4a).
         var alreadyInProject = decision.Reason == NewFileReason.AlreadyInProject;
         if (decision.Action == NewFileAction.Redirect || alreadyInProject)
         {
             importance = LogVerbosity.Issues;
             var (cause, fix) = NewFileMessages.Explain(decision);
             return RedirectNew(target, output, decision.Reason.ToString(), cause, fix,
-                addToProject: !alreadyInProject, log);
+                addToProject: !alreadyInProject, decision.Tfvc.IsUnderTfvc, log);
         }
 
         // The "after" call is the one that does something; this line matters only while debugging.
@@ -410,13 +410,13 @@ internal static class HookCommand
 
     private static HookResponse RedirectNew(
         string target, OutputStore output, string reason, string cause, string? fix,
-        bool addToProject, HookLog log)
+        bool addToProject, bool underTfvc, HookLog log)
     {
         var result = output.PrepareNewFile(target);
         LogOutput(log, result);
 
         return result.Succeeded
-            ? HookResponse.Redirect(reason, target, RedirectMessages.NewFile(target, cause, fix, addToProject))
+            ? HookResponse.Redirect(reason, target, RedirectMessages.NewFile(target, cause, fix, addToProject, underTfvc))
             : HookResponse.Deny(ReasonOutputFailed, RedirectMessages.OutputFailed(cause, result.Error!, isNewFile: true));
     }
 
@@ -443,14 +443,15 @@ internal static class HookCommand
 
             case NewFileAction.LeaveOutsideProjects:
                 importance = LogVerbosity.Issues;
-                return HookResponse.Allow(decision.Reason.ToString(), NewFileMessages.OutsideProjects);
+                return HookResponse.Allow(decision.Reason.ToString(), NewFileMessages.OutsideProjects(decision.Tfvc.IsUnderTfvc));
 
             case NewFileAction.Redirect:
                 {
                     // Too late to redirect: the file exists. It stays in place, a copy goes to Output.
                     importance = LogVerbosity.Issues;
                     var (cause, fix) = NewFileMessages.Explain(decision);
-                    return CopyNotAdded(path, target, output, decision.Reason.ToString(), cause, fix, log);
+                    return CopyNotAdded(path, target, output, decision.Reason.ToString(), cause, fix,
+                        decision.Tfvc.IsUnderTfvc, log);
                 }
 
             case NewFileAction.None:
@@ -474,21 +475,22 @@ internal static class HookCommand
     // The file stays where the tool wrote it (Visual Studio may already refer to it there); the copy makes
     // the rest of the session work on one version, which the user later merges back (slice 3 results, §1.5).
     private static HookResponse CopyNotAdded(
-        string path, string target, OutputStore output, string reason, string cause, string? fix, HookLog log)
+        string path, string target, OutputStore output, string reason, string cause, string? fix,
+        bool underTfvc, HookLog log)
     {
         var result = output.CopyCreatedFile(path, target);
         LogOutput(log, result);
 
         var message = RedirectMessages.CreatedNotAdded(
-            cause, fix, result.Succeeded ? target : null, result.Error);
+            cause, fix, result.Succeeded ? target : null, result.Error, underTfvc);
         return HookResponse.Allow(reason, message);
     }
 
     private static (NewFileDecision Decision, VsNewFileProbe Probe) DecideNewFile(string path, HookLog log)
     {
+        // The TFVC classification only shapes the texts and the log; Visual Studio is asked for every path.
         var tfvc = ClassifyTfvc(path, log);
 
-        // Visual Studio is asked only for a path in a TFVC server workspace.
         var probe = new VsNewFileProbe(path);
         var decision = NewFileDecider.Decide(path, tfvc, probe.Query);
 
@@ -546,7 +548,7 @@ internal static class HookCommand
 
         importance = LogVerbosity.Issues;
         var (cause, fix) = NewFileMessages.ExplainAddFailure(project.Name, result);
-        return CopyNotAdded(path, target, output, ReasonAddFailed, cause, fix, log);
+        return CopyNotAdded(path, target, output, ReasonAddFailed, cause, fix, decision.Tfvc.IsUnderTfvc, log);
     }
 
     private static void LogSourceControl(HookLog log, VsInstance? vs, string path)

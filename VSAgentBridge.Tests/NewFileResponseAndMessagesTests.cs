@@ -148,9 +148,50 @@ internal sealed class NewFileResponseAndMessagesTests
     }
 
     [TestMethod]
-    public void Explain_AlreadyInProject_FixIsGetLatest()
+    [DataRow(TfvcPathStatus.ServerWorkspace)]
+    [DataRow(TfvcPathStatus.LocalWorkspace)]
+    public void Explain_AlreadyInProject_UnderTfvc_FixIsGetLatestFromTfs(TfvcPathStatus status)
     {
-        Assert.IsTrue(NewFileMessages.Explain(Decision(NewFileReason.AlreadyInProject)).Fix!.Contains("from TFS"));
+        var (cause, fix) = NewFileMessages.Explain(Decision(NewFileReason.AlreadyInProject, status: status));
+
+        Assert.IsTrue(cause.Contains("not yet got from TFS"), cause);
+        Assert.IsTrue(fix!.Contains("from TFS"), fix);
+    }
+
+    [TestMethod]
+    public void Explain_AlreadyInProject_NotUnderTfvc_FixIsNeutralRestore()
+    {
+        var (cause, fix) = NewFileMessages.Explain(Decision(NewFileReason.AlreadyInProject, status: TfvcPathStatus.NotMapped));
+
+        Assert.IsTrue(cause.Contains("missing on disk"), cause);
+        Assert.IsTrue(fix!.StartsWith("restore the original", StringComparison.Ordinal), fix);
+        HookResponseAndMessagesTests.AssertFixFragment(fix);
+    }
+
+    // VCS independence: outside TFVC no cause or fix mentions TFVC or TFS.
+    [TestMethod]
+    [DataRow(NewFileReason.NotUnderOpenSolution)]
+    [DataRow(NewFileReason.SeveralInstances)]
+    [DataRow(NewFileReason.VisualStudioError)]
+    [DataRow(NewFileReason.AlreadyInProject)]
+    [DataRow(NewFileReason.SeveralProjectsInFolder)]
+    [DataRow(NewFileReason.ProjectUnloaded)]
+    public void Explain_NotUnderTfvc_NeverMentionsTfvc(NewFileReason reason)
+    {
+        var (cause, fix) = NewFileMessages.Explain(Decision(reason, status: TfvcPathStatus.NotMapped));
+
+        Assert.IsFalse(cause.Contains("TFVC") || cause.Contains("TFS"), cause);
+        Assert.IsFalse(fix!.Contains("TFVC") || fix.Contains("TFS"), fix);
+    }
+
+    [TestMethod]
+    [DataRow(TfvcPathStatus.NotMapped)]
+    [DataRow(TfvcPathStatus.ServerWorkspace)]
+    public void Explain_NotUnderOpenSolution_IsNeutral(TfvcPathStatus status)
+    {
+        var (cause, _) = NewFileMessages.Explain(Decision(NewFileReason.NotUnderOpenSolution, status: status));
+
+        Assert.AreEqual("no open Visual Studio solution contains this folder.", cause);
     }
 
     [TestMethod]
@@ -170,21 +211,43 @@ internal sealed class NewFileResponseAndMessagesTests
         var text = NewFileMessages.AddedToProject("App");
 
         Assert.IsTrue(text.Contains("'App'"), text);
-        Assert.IsTrue(text.Contains("pending add"), text);
+        Assert.IsTrue(text.Contains("through Visual Studio"), text);
         Assert.IsTrue(text.Contains("do not edit the project file"), text);
         Assert.IsFalse(text.Contains(@":\"), text);
     }
 
+    // Source control is Visual Studio's business: the text claims no pending add, under any version control.
     [TestMethod]
-    public void OutsideProjects_SaysNotInTfvcAndHowToAdd()
+    public void AddedToProject_DoesNotMentionSourceControl()
     {
-        var text = NewFileMessages.OutsideProjects;
+        var text = NewFileMessages.AddedToProject("App");
+
+        Assert.IsFalse(text.Contains("pending add"), text);
+        Assert.IsFalse(text.Contains("TFVC"), text);
+    }
+
+    [TestMethod]
+    public void OutsideProjects_UnderTfvc_SaysNotInTfvcAndHowToAdd()
+    {
+        var text = NewFileMessages.OutsideProjects(underTfvc: true);
 
         Assert.IsTrue(text.StartsWith("VS Agent Bridge: ", StringComparison.Ordinal), text);
         Assert.IsTrue(text.Contains("outside all projects"), text);
-        Assert.IsTrue(text.Contains("not in TFVC"), text);
+        Assert.IsTrue(text.Contains("so it is in no project and not in TFVC;"), text);
+        Assert.IsTrue(text.Contains("the new file is in no project and not in TFVC;"), text);
         Assert.IsTrue(text.Contains("Add > Existing Item"), text);
         Assert.IsTrue(text.Contains("tell the user: "), text);
+    }
+
+    [TestMethod]
+    public void OutsideProjects_NotUnderTfvc_DoesNotMentionTfvc()
+    {
+        var text = NewFileMessages.OutsideProjects(underTfvc: false);
+
+        Assert.IsTrue(text.Contains("so it is in no project;"), text);
+        Assert.IsTrue(text.Contains("the new file is in no project;"), text);
+        Assert.IsTrue(text.Contains("Add > Existing Item"), text);
+        Assert.IsFalse(text.Contains("TFVC"), text);
     }
 
     [TestMethod]
@@ -281,8 +344,9 @@ internal sealed class NewFileResponseAndMessagesTests
         IReadOnlyList<string>? instances = null,
         VsProjectFacts? project = null,
         IReadOnlyList<VsProjectFacts>? projectsInFolder = null,
-        IReadOnlyList<VsSolutionFacts>? solutions = null) =>
-        new(NewFileAction.Redirect, reason, new TfvcPathClassification(TfvcPathStatus.ServerWorkspace, null, null, null),
+        IReadOnlyList<VsSolutionFacts>? solutions = null,
+        TfvcPathStatus status = TfvcPathStatus.ServerWorkspace) =>
+        new(NewFileAction.Redirect, reason, new TfvcPathClassification(status, null, null, null),
             solutions: solutions, instances: instances ?? new[] { "17.0/pid1" }, project: project ?? Project("App"),
             projectsInFolder: projectsInFolder);
 

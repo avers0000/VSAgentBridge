@@ -3,7 +3,9 @@
 /// <summary>
 /// Decides what to do before the agent creates a file that does not exist yet (slice 2 results, §1.4a):
 /// step 1 picks the working Visual Studio instance, step 2 decides inside its solution.
-/// Pure logic: Visual Studio is asked through a callback, and only for a path in a TFVC server workspace.
+/// The same for any version control (TFVC, git or none): Visual Studio is asked for every path.
+/// The TFVC classification does not change the decision; it is kept in it for the log and the texts.
+/// Pure logic: Visual Studio is asked through a callback.
 /// Called again for the "after" event: the solution may have been closed meanwhile,
 /// and an SDK-style project may already have picked the file up.
 /// </summary>
@@ -12,9 +14,9 @@ internal static class NewFileDecider
     private static readonly char[] Separators = { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar };
 
     /// <param name="path">Absolute path of the new file.</param>
-    /// <param name="tfvc">Classification of the path against the TFVC workspace cache.</param>
+    /// <param name="tfvc">Classification of the path against the TFVC workspace cache (for the texts and the log).</param>
     /// <param name="queryVisualStudio">
-    /// Reports the open solution of every Visual Studio instance; called at most once.
+    /// Reports the open solution of every Visual Studio instance; called exactly once.
     /// The decision refers to the working instance by its index in the returned list.
     /// </param>
     public static NewFileDecision Decide(
@@ -22,25 +24,7 @@ internal static class NewFileDecider
         TfvcPathClassification tfvc,
         Func<IReadOnlyList<VsSolutionFacts>> queryVisualStudio)
     {
-        switch (tfvc.Status)
-        {
-            case TfvcPathStatus.NotMapped:
-                return new NewFileDecision(NewFileAction.None, NewFileReason.NotTfvc, tfvc);
-
-            case TfvcPathStatus.LocalWorkspace:
-                return new NewFileDecision(NewFileAction.None, NewFileReason.LocalWorkspace, tfvc);
-
-            case TfvcPathStatus.ServerWorkspace:
-                return DecideInServerWorkspace(path, tfvc, queryVisualStudio());
-
-            default:
-                throw new ArgumentOutOfRangeException(nameof(tfvc), tfvc.Status, "Unknown TFVC path status.");
-        }
-    }
-
-    private static NewFileDecision DecideInServerWorkspace(
-        string path, TfvcPathClassification tfvc, IReadOnlyList<VsSolutionFacts> solutions)
-    {
+        var solutions = queryVisualStudio();
         var fileFolder = AsFolder(Path.GetDirectoryName(Path.GetFullPath(path))!);
 
         // Step 1: the working instance — the only one whose solution folder contains the path.
@@ -48,7 +32,7 @@ internal static class NewFileDecider
         // An instance that did not answer may be the working one, or a second one.
         var failed = solutions.Where(s => s.Error != null).Select(s => s.Instance).ToList();
         if (failed.Count > 0)
-            return Deny(NewFileReason.VisualStudioError, tfvc, solutions, instances: failed);
+            return Redirect(NewFileReason.VisualStudioError, tfvc, solutions, instances: failed);
 
         var covering = Enumerable.Range(0, solutions.Count)
             .Where(i => solutions[i].IsOpen
@@ -57,11 +41,11 @@ internal static class NewFileDecider
             .ToList();
 
         if (covering.Count == 0)
-            return Deny(NewFileReason.NotUnderOpenSolution, tfvc, solutions);
+            return Redirect(NewFileReason.NotUnderOpenSolution, tfvc, solutions);
 
         if (covering.Count > 1)
         {
-            return Deny(NewFileReason.SeveralInstances, tfvc, solutions,
+            return Redirect(NewFileReason.SeveralInstances, tfvc, solutions,
                 instances: covering.Select(i => solutions[i].Instance).ToList());
         }
 
@@ -88,20 +72,20 @@ internal static class NewFileDecider
 
         if (deepest.Count > 1)
         {
-            return Deny(NewFileReason.SeveralProjectsInFolder, tfvc, solutions, index,
+            return Redirect(NewFileReason.SeveralProjectsInFolder, tfvc, solutions, index,
                 projectsInFolder: deepest.Select(m => m.Project).ToList());
         }
 
         var target = deepest[0];
         if (!target.Project.IsLoaded)
-            return Deny(NewFileReason.ProjectUnloaded, tfvc, solutions, index, project: target.Project);
+            return Redirect(NewFileReason.ProjectUnloaded, tfvc, solutions, index, project: target.Project);
 
         var chain = fileFolder.Substring(target.Folder.Length).Split(Separators, StringSplitOptions.RemoveEmptyEntries);
         return new NewFileDecision(NewFileAction.AddToProject, NewFileReason.InProjectFolder, tfvc, solutions, index,
             project: target.Project, folderChain: chain);
     }
 
-    private static NewFileDecision Deny(
+    private static NewFileDecision Redirect(
         NewFileReason reason,
         TfvcPathClassification tfvc,
         IReadOnlyList<VsSolutionFacts> solutions,

@@ -9,35 +9,19 @@ internal sealed class NewFileDeciderTests
     private const string AppProj = @"D:\Src\App\App.csproj";
     private const string DbProj = @"D:\Src\Db\Db.sqlproj";
 
-    // ---- Without Visual Studio ----
+    // ---- Any version control: Visual Studio is asked for every path, the decision does not depend on TFVC ----
 
     [TestMethod]
-    [DataRow(TfvcPathStatus.NotMapped, NewFileReason.NotTfvc)]
-    [DataRow(TfvcPathStatus.LocalWorkspace, NewFileReason.LocalWorkspace)]
-    public void Decide_OutsideServerWorkspace_DoesNotAskVisualStudio(TfvcPathStatus status, NewFileReason expectedReason)
-    {
-        var calls = 0;
-
-        var decision = NewFileDecider.Decide(@"D:\Src\App\New.cs", Classification(status), () =>
-        {
-            calls++;
-            return Array.Empty<VsSolutionFacts>();
-        });
-
-        Assert.AreEqual(NewFileAction.None, decision.Action);
-        Assert.AreEqual(expectedReason, decision.Reason);
-        Assert.AreEqual(0, calls);
-        Assert.IsNull(decision.Solutions);
-        Assert.IsFalse(decision.RequestsAfter);
-    }
-
-    [TestMethod]
-    public void Decide_ServerWorkspace_AsksVisualStudioOnce()
+    [DataRow(TfvcPathStatus.NotMapped)]
+    [DataRow(TfvcPathStatus.LocalWorkspace)]
+    [DataRow(TfvcPathStatus.ServerWorkspace)]
+    public void Decide_AnyTfvcStatus_AsksVisualStudioOnce(TfvcPathStatus status)
     {
         var calls = 0;
         var solutions = new[] { Solution("17.0/pid1", Sln, Project("App", AppProj)) };
+        var tfvc = Classification(status);
 
-        var decision = NewFileDecider.Decide(@"D:\Src\App\New.cs", Server(), () =>
+        var decision = NewFileDecider.Decide(@"D:\Src\App\New.cs", tfvc, () =>
         {
             calls++;
             return solutions;
@@ -45,6 +29,62 @@ internal sealed class NewFileDeciderTests
 
         Assert.AreEqual(1, calls);
         Assert.AreSame(solutions, decision.Solutions);
+        Assert.AreSame(tfvc, decision.Tfvc);
+    }
+
+    [TestMethod]
+    [DataRow(TfvcPathStatus.NotMapped)]
+    [DataRow(TfvcPathStatus.LocalWorkspace)]
+    [DataRow(TfvcPathStatus.ServerWorkspace)]
+    public void Decide_AnyTfvcStatus_InProjectFolder_AddToProject(TfvcPathStatus status)
+    {
+        var decision = NewFileDecider.Decide(@"D:\Src\App\Models\New.cs", Classification(status),
+            () => new[] { Solution("17.0/pid1", Sln, Project("App", AppProj)) });
+
+        Assert.AreEqual(NewFileAction.AddToProject, decision.Action);
+        Assert.AreEqual(NewFileReason.InProjectFolder, decision.Reason);
+        Assert.AreEqual("App", decision.Project!.Name);
+        CollectionAssert.AreEqual(new[] { "Models" }, decision.FolderChain.ToArray());
+        Assert.IsTrue(decision.RequestsAfter);
+    }
+
+    [TestMethod]
+    [DataRow(TfvcPathStatus.NotMapped)]
+    [DataRow(TfvcPathStatus.LocalWorkspace)]
+    [DataRow(TfvcPathStatus.ServerWorkspace)]
+    public void Decide_AnyTfvcStatus_NoOpenSolution_Redirect(TfvcPathStatus status)
+    {
+        var decision = NewFileDecider.Decide(@"D:\Src\App\New.cs", Classification(status),
+            () => Array.Empty<VsSolutionFacts>());
+
+        AssertDeny(decision, NewFileReason.NotUnderOpenSolution);
+    }
+
+    [TestMethod]
+    [DataRow(TfvcPathStatus.NotMapped)]
+    [DataRow(TfvcPathStatus.LocalWorkspace)]
+    [DataRow(TfvcPathStatus.ServerWorkspace)]
+    public void Decide_AnyTfvcStatus_OutsideProjects_LeaveOutsideProjects(TfvcPathStatus status)
+    {
+        var decision = NewFileDecider.Decide(@"D:\Src\Docs\Notes.md", Classification(status),
+            () => new[] { Solution("17.0/pid1", Sln, Project("App", AppProj)) });
+
+        Assert.AreEqual(NewFileAction.LeaveOutsideProjects, decision.Action);
+        Assert.AreEqual(NewFileReason.OutsideProjects, decision.Reason);
+        Assert.IsTrue(decision.RequestsAfter);
+    }
+
+    [TestMethod]
+    [DataRow(TfvcPathStatus.NotMapped)]
+    [DataRow(TfvcPathStatus.ServerWorkspace)]
+    public void Decide_AnyTfvcStatus_AlreadyInProject_None(TfvcPathStatus status)
+    {
+        var decision = NewFileDecider.Decide(@"D:\Src\App\New.cs", Classification(status),
+            () => new[] { Solution("17.0/pid1", Sln, containsPath: true, Project("App", AppProj)) });
+
+        Assert.AreEqual(NewFileAction.None, decision.Action);
+        Assert.AreEqual(NewFileReason.AlreadyInProject, decision.Reason);
+        Assert.IsFalse(decision.RequestsAfter);
     }
 
     // ---- Step 1: the working instance ----

@@ -12,6 +12,7 @@
 /// a bare "merge" came back as "replace the old file". Cleaning up Output is the user's business: no "delete the copy".
 /// Causes and fixes come from <see cref="HookMessages"/> (existing files) and <see cref="NewFileMessages"/> (new files).
 /// A fix is what the user does before merging (and so also avoids the redirect next time): "open the solution…".
+/// TFVC is mentioned only when the path is under TFVC: the logic is the same for any version control.
 /// </summary>
 internal static class RedirectMessages
 {
@@ -23,6 +24,13 @@ internal static class RedirectMessages
 
     private const string MergeByComparing = "merge it into the original by comparing them, not by copying over it.";
 
+    /// <summary>
+    /// "in no project and not in TFVC" under TFVC, "in no project" otherwise: a new file that Visual Studio did not add
+    /// is also not a pending add. Shared with <see cref="NewFileMessages"/>.
+    /// </summary>
+    internal static string InNoProject(bool underTfvc) =>
+        underTfvc ? "in no project and not in TFVC" : "in no project";
+
     /// <summary>"before": an existing file is edited in a copy under Output (first time in this session).</summary>
     /// <param name="fix">What the user does before merging; null when there is nothing to do.</param>
     public static string ExistingFile(string copy, string cause, string? fix) =>
@@ -33,14 +41,15 @@ internal static class RedirectMessages
     /// <summary>"before": a file the model creates is created under Output instead (first time in this session).</summary>
     /// <param name="addToProject">
     /// True: the user adds the copy to the project through Add > Existing Item (Visual Studio copies it into the folder).
-    /// False: the project already lists the file (it is missing on disk); the fix says to get it from TFS,
+    /// False: the project already lists the file (it is missing on disk); the fix says to restore it,
     /// then the user merges the copy into it.
     /// </param>
-    public static string NewFile(string copy, string cause, string? fix, bool addToProject) =>
+    /// <param name="underTfvc">The original path is in a TFVC workspace: the text also says "not in TFVC".</param>
+    public static string NewFile(string copy, string cause, string? fix, bool addToProject, bool underTfvc) =>
         $"VS Agent Bridge created this file in a session copy instead: {cause} Nothing was created at the original path. " +
         KeepWorking +
         $"At the end of your answer tell the user: VS Agent Bridge created the new file as {copy}; " +
-        "it is in no project and not in TFVC; " +
+        $"it is {InNoProject(underTfvc)}; " +
         Then(fix) +
         (addToProject
             ? $"in Solution Explorer right-click the folder where it belongs, {AddByHand}, and pick that file " +
@@ -60,11 +69,12 @@ internal static class RedirectMessages
     /// and a copy went to Output, so the rest of the session works on the copy.
     /// </summary>
     /// <param name="copy">The copy under Output; null when copying failed (then <paramref name="copyError"/> says why).</param>
-    public static string CreatedNotAdded(string cause, string? fix, string? copy, string? copyError)
+    /// <param name="underTfvc">The file is in a TFVC workspace: the text also says "not in TFVC".</param>
+    public static string CreatedNotAdded(string cause, string? fix, string? copy, string? copyError, bool underTfvc)
     {
         var start =
             $"VS Agent Bridge: the file was created but not added to a project: {cause} " +
-            "It is in no project and not in TFVC; do not create it again or edit project files to include it. ";
+            $"It is {InNoProject(underTfvc)}; do not create it again or edit project files to include it. ";
 
         if (copy == null)
         {
