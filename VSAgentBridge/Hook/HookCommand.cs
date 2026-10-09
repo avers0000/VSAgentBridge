@@ -12,7 +12,8 @@ namespace VSAgentBridge.Hook;
 /// "before": a path that already has a copy in this session → the copy (slice 3); otherwise an existing file →
 /// edit logic (slice 1), a missing file → new-file logic (slice 2); whatever cannot be written in place goes to
 /// the session folder under Output (slice 3).
-/// "after": the new file was written → decide again and add it to its project; if that fails, copy it to Output.
+/// "after": the new file was written → decide again, bring it to its format and add it to its project; if that fails,
+/// copy it to Output. The new-file core is shared with the MCP tool create_file (<see cref="NewFileFlow"/>).
 /// "read": a path that has a copy in this session is read from the copy.
 /// "shell": a command that deletes, moves or writes files is refused (slice 4); "delete"/"rename" (a patch) likewise.
 /// stdout carries only the response; diagnostics go to stderr and the log.
@@ -53,6 +54,7 @@ internal static class HookCommand
         var exeDirectory = AppDomain.CurrentDomain.BaseDirectory;
         var settings = BridgeSettings.Load(exeDirectory, out var settingsWarning);
         var log = new HookLog();
+        log.Add("mode", "hook");
         log.Add("settingsWarning", settingsWarning);
 
         // Until a response exists, the call is an issue (invalid request or a crash).
@@ -315,7 +317,10 @@ internal static class HookCommand
         log.Add("exists", true);
         log.Add("readOnly", readOnly);
 
-        var tfvc = ClassifyTfvc(path, log);
+        var sw = Stopwatch.StartNew();
+        var tfvc = TfvcPathClassifier.Classify(path);
+        log.Add("tfvc", tfvc.Status);
+        log.Add("cacheMs", sw.ElapsedMilliseconds);
 
         // Visual Studio is looked up only if the decision needs it (read-only file in a server workspace):
         // selecting the instance takes up to ~1 s while Visual Studio is busy (slice 1 results, §3b).
@@ -390,7 +395,7 @@ internal static class HookCommand
         string path, string target, OutputStore output, HookLog log, out LogVerbosity importance)
     {
         log.Add("exists", false);
-        var (decision, _) = DecideNewFile(path, log);
+        var (decision, _) = NewFileFlow.Decide(path, log);
 
         // The solution already lists a file that is missing on disk (deleted locally, not yet got from source control):
         // creating it anew would bypass the project and source control (slice 2 results, §1.4a).
@@ -434,12 +439,19 @@ internal static class HookCommand
 
         // Decided again: the solution may have been closed since "before",
         // and an SDK-style project may already list the file through a wildcard.
-        var (decision, probe) = DecideNewFile(path, log);
+        var (decision, probe) = NewFileFlow.Decide(path, log);
+
+        // Created by a built-in tool (the safety net), not by create_file: counted in the log (slice 5 results, §1.5).
+        log.Add("newFile", "write");
+
+        // Created by this tool call ("before" saw no file), so rewriting it changes nobody else's content;
+        // whatever happens next (added, outside projects, copied to Output), the file has its format.
+        NewFileFlow.Normalize(path, decision, log);
 
         switch (decision.Action)
         {
             case NewFileAction.AddToProject:
-                return AddToProject(probe.InstanceAt(decision.SolutionIndex)!, decision, path, target, output, log, out importance);
+                return AddToProject(probe, decision, path, target, output, log, out importance);
 
             case NewFileAction.LeaveOutsideProjects:
                 importance = LogVerbosity.Issues;
@@ -486,59 +498,12 @@ internal static class HookCommand
         return HookResponse.Allow(reason, message);
     }
 
-    private static (NewFileDecision Decision, VsNewFileProbe Probe) DecideNewFile(string path, HookLog log)
-    {
-        // The TFVC classification only shapes the texts and the log; Visual Studio is asked for every path.
-        var tfvc = ClassifyTfvc(path, log);
-
-        var probe = new VsNewFileProbe(path);
-        var decision = NewFileDecider.Decide(path, tfvc, probe.Query);
-
-        log.Add("action", decision.Action);
-        log.Add("reason", decision.Reason);
-        if (decision.Solutions != null)
-        {
-            log.Add("vsInstances", probe.InstanceCount);
-            log.Add("vs", decision.SolutionIndex >= 0 ? decision.Solutions[decision.SolutionIndex].Instance : "none");
-            if (decision.SolutionIndex >= 0)
-                log.Add("solution", decision.Solutions[decision.SolutionIndex].SolutionPath);
-            log.Add("vsMs", probe.QueryMs);
-
-            var errors = decision.Solutions.Where(s => s.Error != null).Select(s => $"{s.Instance}: {s.Error}").ToList();
-            if (errors.Count > 0) log.Add("vsErrors", string.Join("; ", errors));
-        }
-        if (decision.Instances.Count > 0)
-            log.Add("instances", string.Join(",", decision.Instances));
-        log.Add("project", decision.Project?.FilePath);
-        if (decision.FolderChain.Count > 0)
-            log.Add("folders", string.Join("\\", decision.FolderChain));
-        if (decision.ProjectsInFolder.Count > 0)
-            log.Add("projectsInFolder", string.Join(",", decision.ProjectsInFolder.Select(p => p.Name)));
-
-        return (decision, probe);
-    }
-
     private static HookResponse AddToProject(
-        VsInstance vs, NewFileDecision decision, string path, string target, OutputStore output,
+        VsNewFileProbe probe, NewFileDecision decision, string path, string target, OutputStore output,
         HookLog log, out LogVerbosity importance)
     {
-        // AddToProject implies a loaded target project in the working instance.
         var project = decision.Project!;
-
-        var sw = Stopwatch.StartNew();
-        var result = VsAddToProject.Add(vs, project.FilePath, decision.FolderChain, path);
-
-        log.Add("add", result.Succeeded ? "ok" : "failed");
-        log.Add("addMs", sw.ElapsedMilliseconds);
-        log.Add("foldersAdded", result.FoldersAdded);
-        log.Add("attempts", result.Attempts);
-        if (result.IsCopy)
-            log.Add("copy", result.AddedItemPath);
-        log.Add("itemFound", result.ItemFound);
-        log.Add("projectSaved", result.ProjectSaved);
-        log.Add("underScc", result.IsUnderScc);
-        log.Add("checkedOut", result.IsCheckedOut);
-        log.Add("addError", result.Error);
+        var result = NewFileFlow.Add(probe, decision, path, log);
 
         if (result.Succeeded)
         {
@@ -575,15 +540,6 @@ internal static class HookCommand
         log.Add("output", result.TargetPath);
         log.Add("outputCopy", result.CopyState);
         log.Add("outputError", result.Error);
-    }
-
-    private static TfvcPathClassification ClassifyTfvc(string path, HookLog log)
-    {
-        var sw = Stopwatch.StartNew();
-        var tfvc = TfvcPathClassifier.Classify(path, Environment.MachineName, TfvcCacheReader.ReadAll());
-        log.Add("tfvc", tfvc.Status);
-        log.Add("cacheMs", sw.ElapsedMilliseconds);
-        return tfvc;
     }
 
     private static void AddVisualStudio(HookLog log, VsFileProbe probe, VsFileFacts? vs)

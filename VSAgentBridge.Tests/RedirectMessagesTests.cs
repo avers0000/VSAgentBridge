@@ -127,6 +127,19 @@ internal sealed class RedirectMessagesTests
         AssertNoDelete(text);
     }
 
+    // create_file (slice 5): no session, so no copy is made; the text must not mention one.
+    [TestMethod]
+    public void CreatedNotAdded_NoCopyMade_MentionsNoCopyAndNoOutput()
+    {
+        var text = RedirectMessages.CreatedNotAdded("the cause.", "the fix", copy: null, copyError: null, underTfvc: false);
+
+        Assert.IsTrue(text.StartsWith("VS Agent Bridge: the file was created but not added to a project: the cause.", StringComparison.Ordinal), text);
+        Assert.IsFalse(text.Contains("Output"), text);
+        Assert.IsFalse(text.Contains("copy"), text);
+        Assert.IsTrue(text.EndsWith("tell the user: the new file is not in a project; the fix, then add it in Visual Studio (Add > Existing Item).", StringComparison.Ordinal), text);
+        AssertNoDelete(text);
+    }
+
     // ---- VCS independence: TFVC is mentioned only when the path is under TFVC ----
 
     [TestMethod]

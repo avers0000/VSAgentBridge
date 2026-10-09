@@ -42,6 +42,13 @@ internal static class TfvcPathClassifier
     }
 
     /// <summary>
+    /// Classifies a path for this machine with the current TFVC workspace cache
+    /// (the entry point for the hook and the MCP server; the overload with explicit inputs is for tests).
+    /// </summary>
+    public static TfvcPathClassification Classify(string path) =>
+        Classify(path, Environment.MachineName, TfvcCacheReader.ReadAll());
+
+    /// <summary>
     /// Workspaces of this machine, one entry per workspace (server + name + owner).
     /// When several cache files list the same workspace, the newest file wins:
     /// another Visual Studio version may not have refreshed its copy yet.

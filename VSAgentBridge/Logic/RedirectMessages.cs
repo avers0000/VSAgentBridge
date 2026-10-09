@@ -67,8 +67,12 @@ internal static class RedirectMessages
     /// <summary>
     /// "after": a new file was created in place but could not be added to a project; it stays in place
     /// and a copy went to Output, so the rest of the session works on the copy.
+    /// Also create_file when adding failed after writing: there is no session, so no copy is made.
     /// </summary>
-    /// <param name="copy">The copy under Output; null when copying failed (then <paramref name="copyError"/> says why).</param>
+    /// <param name="copy">
+    /// The copy under Output; null when copying failed (then <paramref name="copyError"/> says why)
+    /// or when no copy is made (create_file: both are null).
+    /// </param>
     /// <param name="underTfvc">The file is in a TFVC workspace: the text also says "not in TFVC".</param>
     public static string CreatedNotAdded(string cause, string? fix, string? copy, string? copyError, bool underTfvc)
     {
@@ -79,7 +83,7 @@ internal static class RedirectMessages
         if (copy == null)
         {
             return start +
-                   $"(Copying it to the bridge's Output folder failed: {copyError}.) " +
+                   (copyError != null ? $"(Copying it to the bridge's Output folder failed: {copyError}.) " : "") +
                    "At the end of your answer tell the user: the new file is not in a project; " +
                    Then(fix) + $"add it in Visual Studio ({AddByHand}).";
         }
