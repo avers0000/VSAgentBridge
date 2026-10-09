@@ -15,6 +15,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Content Include="claude\.claude-plugin\plugin.json" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="envdte" Version="8.0.2" ExcludeAssets="runtime" />
     <PackageReference Include="envdte80" Version="8.0.3" ExcludeAssets="runtime" />
     <PackageReference Include="ModelContextProtocol.Core" Version="2.2.0" />
@@ -38,8 +42,27 @@
     <None Update="vsagentbridge.sample.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <!-- Claude Code mod. Folders whose name starts with a dot are excluded from SDK default items,
+         so .claude-plugin\plugin.json is included explicitly. -->
+    <None Include="claude\.claude-plugin\plugin.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="claude\hooks\hooks.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="claude\hooks\register.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
-  
+  <!--
+    vsab-plugin-common.js is shared by the harness adapters and is imported from each adapter's own folder
+    (a Claude Code mod cannot import files outside its plugin folder), so the build copies the one source file
+    into every adapter folder of the output. Add a line here for each new adapter.
+  -->
+  <Target Name="CopyPluginCommon" AfterTargets="Build">
+    <Copy SourceFiles="vsab-plugin-common.js" DestinationFolder="$(OutDir)opencode" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="vsab-plugin-common.js" DestinationFolder="$(OutDir)claude\hooks" SkipUnchangedFiles="true" />
+  </Target>
   <!--
     EnvDTE/stdole interop types are embedded into the exe (NoPIA).
     The license of these packages does not allow redistributing the DLLs,

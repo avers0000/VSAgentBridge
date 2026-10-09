@@ -6,10 +6,15 @@
 // Before a shell command runs, and before a patch deletes or moves files, asks the exe too: commands that delete,
 // move or write files and patches that delete or move them are refused (slice 4); a command is never changed.
 // Everything OpenCode-specific lives here: the exe knows nothing about OpenCode, its tools or their inputs.
+// Code shared with the Claude Code adapter (request, answer check, texts) is in vsab-plugin-common.js.
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import {
+    BRIDGE_TIMEOUT_MS, makeRequest as makeBridgeRequest, parseBridgeOutput,
+    blockedText, commandBlockedText, patchBlockedText, notAddedText,
+} from "./vsab-plugin-common.js"
 
 const pluginDir = path.dirname(fileURLToPath(import.meta.url))
 const exePath = path.join(pluginDir, "..", "vsagentbridge.exe")
@@ -26,9 +31,6 @@ const SHELL_TOOLS = new Set(["shell", "bash"])
 
 // OpenCode tools that apply a patch (input.patchText); only its deleted and moved files are checked for now.
 const PATCH_TOOLS = new Set(["patch", "apply_patch"])
-
-// Checkout or adding to a project may wait for a busy Visual Studio (E_PENDING retries, message filter).
-const TIMEOUT_MS = 30_000
 
 // Work left for "after": either a call to the bridge (the exe asked for it) or a message to append (a redirect).
 // An entry whose "after" never comes (tool cancelled, OpenCode quirk) is dropped after this time.
@@ -150,10 +152,7 @@ function patchMoves(patchText) {
 }
 
 function makeRequest(eventName, tool, filePath, cwd, session) {
-    const request = { event: eventName, harness: "opencode", tool, path: filePath }
-    if (cwd) request.cwd = cwd
-    if (session) request.session = session
-    return request
+    return makeBridgeRequest("opencode", eventName, tool, filePath, cwd, session)
 }
 
 // path: the path the model gave (what the bridge is asked about again in "after");
@@ -229,66 +228,17 @@ function askBridge(request, failureText, { soft = false, silent = false } = {}) 
     const result = spawnSync(exePath, ["hook"], {
         input: Buffer.from(JSON.stringify(request), "utf8"),
         encoding: "utf8",
-        timeout: TIMEOUT_MS,
+        timeout: BRIDGE_TIMEOUT_MS,
         windowsHide: true,
     })
 
     if (result.error) {
         return fail(result.error.code === "ETIMEDOUT"
-            ? `no answer within ${TIMEOUT_MS / 1000} s`
+            ? `no answer within ${BRIDGE_TIMEOUT_MS / 1000} s`
             : `cannot run ${exePath}: ${result.error.message}`)
     }
     if (result.signal) return fail(`vsagentbridge.exe was terminated (${result.signal})`)
-    if (result.status !== 0) {
-        const stderr = (result.stderr ?? "").trim()
-        return fail(`vsagentbridge.exe exited with code ${result.status}${stderr ? ": " + stderr : ""}`)
-    }
 
-    let response
-    try {
-        response = JSON.parse(result.stdout)
-    } catch {
-        return fail(`unreadable response: ${shorten(result.stdout)}`)
-    }
-
-    if (response?.decision === "allow") return response
-    if (response?.decision === "deny" && nonEmpty(response.message)) return response
-    if (response?.decision === "redirect" && nonEmpty(response.path) && nonEmpty(response.message)) return response
-    return fail(`unexpected response: ${shorten(result.stdout)}`)
-}
-
-function nonEmpty(value) {
-    return typeof value === "string" && value !== ""
-}
-
-function blockedText(reason) {
-    return `VS Agent Bridge blocked this edit: the bridge could not run (${reason}). The file was not changed. ` +
-        "Do not retry this change with any tool (edit, write or any other) and do not write it to another file or location. " +
-        "Show the intended change in your reply as a diff, and at the end of your answer tell the user: " +
-        `VS Agent Bridge could not run (${reason}); check its installation and its log, then ask to repeat the change.`
-}
-
-function commandBlockedText(reason) {
-    return `VS Agent Bridge blocked this command: the bridge could not run (${reason}). Nothing was run. ` +
-        "Do not retry it with any tool. At the end of your answer tell the user: " +
-        `VS Agent Bridge could not run (${reason}); check its installation and its log.`
-}
-
-function patchBlockedText(reason) {
-    return `VS Agent Bridge blocked this patch: the bridge could not run (${reason}). Nothing in the patch was applied. ` +
-        "Do not retry this change with any tool and do not write it to another file or location. " +
-        "Show the intended change in your reply as a diff, and at the end of your answer tell the user: " +
-        `VS Agent Bridge could not run (${reason}); check its installation and its log, then ask to repeat the change.`
-}
-
-function notAddedText(filePath, reason) {
-    return `VS Agent Bridge: ${filePath} was created, but it was not added to a project: the bridge could not run (${reason}). ` +
-        "It is in no project and not in TFVC. Do not create it again and do not edit project files to include it. " +
-        "At the end of your answer tell the user: the new file was not added to a project; add it in Visual Studio " +
-        "(right-click its folder in Solution Explorer, Add > Existing Item), and check the installation and the log of VS Agent Bridge."
-}
-
-function shorten(text) {
-    const s = String(text ?? "").trim()
-    return s.length > 300 ? s.slice(0, 300) + "..." : s || "(empty)"
+    const parsed = parseBridgeOutput(result.status, result.stdout, result.stderr)
+    return parsed.failure !== undefined ? fail(parsed.failure) : parsed.response
 }
