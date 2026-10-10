@@ -5,19 +5,21 @@ namespace VSAgentBridge.Logic;
 
 /// <summary>
 /// Response of "vsagentbridge hook":
-/// {"decision":"allow","reason":"..."}, optionally with "message" and/or "after":true;
+/// {"decision":"allow","reason":"..."}, optionally with "message" and/or "after":true with "state";
 /// {"decision":"deny","reason":"...","message":"..."};
 /// {"decision":"redirect","reason":"...","path":"...","message":"..."}.
 /// </summary>
 internal sealed class HookResponse
 {
-    private HookResponse(HookDecision decision, string reason, string? message, bool callAfter, string? redirectPath)
+    private HookResponse(
+        HookDecision decision, string reason, string? message, bool callAfter, string? redirectPath, WriteState? state = null)
     {
         Decision = decision;
         Reason = reason;
         Message = message;
         CallAfter = callAfter;
         RedirectPath = redirectPath;
+        State = state;
     }
 
     /// <param name="reason">Machine-readable cause.</param>
@@ -25,12 +27,15 @@ internal sealed class HookResponse
     /// Text the adapter appends to the tool's result. Meaningful in a response to "after":
     /// before the tool runs there is no result to append it to.
     /// </param>
-    /// <param name="callAfter">
-    /// Only in a response to "before": call the bridge again with event "after" and the same path
-    /// once the tool has completed successfully.
-    /// </param>
-    public static HookResponse Allow(string reason, string? message = null, bool callAfter = false) =>
-        new(HookDecision.Allow, reason, message, callAfter, redirectPath: null);
+    public static HookResponse Allow(string reason, string? message = null) =>
+        new(HookDecision.Allow, reason, message, callAfter: false, redirectPath: null);
+
+    /// <summary>
+    /// Only in a response to "before": the tool runs as requested; the adapter then calls the bridge again with
+    /// event "after", the same path and <paramref name="state"/> returned unchanged (slice 6 results, §1.13).
+    /// </summary>
+    public static HookResponse AllowThenAfter(string reason, WriteState state) =>
+        new(HookDecision.Allow, reason, message: null, callAfter: true, redirectPath: null, state);
 
     public static HookResponse Deny(string reason, string message) =>
         new(HookDecision.Deny, reason, message, callAfter: false, redirectPath: null);
@@ -56,6 +61,9 @@ internal sealed class HookResponse
 
     /// <summary>The adapter must send an "after" request when the tool completes successfully.</summary>
     public bool CallAfter { get; }
+
+    /// <summary>Set only with <see cref="CallAfter"/>: what "before" knew about the file, for "after".</summary>
+    public WriteState? State { get; }
 
     /// <summary>Set only for <see cref="HookDecision.Redirect"/>: where the tool must read or write instead.</summary>
     public string? RedirectPath { get; }
@@ -85,6 +93,8 @@ internal sealed class HookResponse
                 writer.WriteString("message", Message);
             if (CallAfter)
                 writer.WriteBoolean("after", true);
+            if (State != null)
+                writer.WriteString("state", State.ToString());
             writer.WriteEndObject();
         }
 

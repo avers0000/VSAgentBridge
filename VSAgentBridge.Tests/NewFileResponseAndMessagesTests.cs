@@ -17,11 +17,11 @@ internal sealed class NewFileResponseAndMessagesTests
     // ---- HookResponse: "after" and messages with allow ----
 
     [TestMethod]
-    public void ToJson_AllowWithCallAfter_HasAfterTrue()
+    public void ToJson_AllowThenAfter_HasAfterTrueAndState()
     {
-        var json = HookResponse.Allow("InProjectFolder", callAfter: true).ToJson();
+        var json = HookResponse.AllowThenAfter("InProjectFolder", WriteState.New).ToJson();
 
-        Assert.AreEqual("""{"decision":"allow","reason":"InProjectFolder","after":true}""", json);
+        Assert.AreEqual("""{"decision":"allow","reason":"InProjectFolder","after":true,"state":"new"}""", json);
     }
 
     [TestMethod]

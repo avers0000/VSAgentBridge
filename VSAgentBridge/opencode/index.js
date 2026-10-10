@@ -71,7 +71,7 @@ export default {
                 return
             }
 
-            if (response.after === true) remember(event, filePath, filePath, { callAfter: true })
+            if (response.after === true) remember(event, filePath, filePath, { callAfter: true, state: response.state })
         })
 
         // Synchronous as well: the message must be in the result before OpenCode hands it to the model.
@@ -88,6 +88,7 @@ export default {
             }
 
             const request = makeRequest("after", entry.tool, entry.path, cwd, entry.session)
+            if (typeof entry.state === "string") request.state = entry.state // what "before" knew, returned as is
             const response = askBridge(request, (reason) => notAddedText(entry.path, reason), { soft: true })
             if (typeof response.message === "string" && response.message) appendToResult(event, response.message)
         })

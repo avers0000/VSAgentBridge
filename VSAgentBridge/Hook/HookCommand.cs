@@ -12,8 +12,10 @@ namespace VSAgentBridge.Hook;
 /// "before": a path that already has a copy in this session → the copy (slice 3); otherwise an existing file →
 /// edit logic (slice 1), a missing file → new-file logic (slice 2); whatever cannot be written in place goes to
 /// the session folder under Output (slice 3).
-/// "after": the new file was written → decide again, bring it to its format and add it to its project; if that fails,
-/// copy it to Output. The new-file core is shared with the MCP tool create_file (<see cref="NewFileFlow"/>).
+/// "after": the "state" of "before" says what was written. A new file → decide again, bring it to its format and add
+/// it to its project; if that fails, copy it to Output. The new-file core is shared with the MCP tool create_file
+/// (<see cref="NewFileFlow"/>). An existing file written in place → only its format of before the write is restored
+/// (slice 6 results, §1.13).
 /// "read": a path that has a copy in this session is read from the copy.
 /// "shell": a command that deletes, moves or writes files is refused (slice 4); "delete"/"rename" (a patch) likewise.
 /// stdout carries only the response; diagnostics go to stderr and the log.
@@ -44,6 +46,9 @@ internal static class HookCommand
     private const string ReasonNoFileChange = "NoFileChange";
     private const string ReasonDeleteOrMoveRefused = "DeleteOrMoveRefused";
     private const string ReasonWriteRefused = "WriteRefused";
+    private const string ReasonStateMissing = "StateMissing";
+    private const string ReasonFormatRestored = "FormatRestored";
+    private const string ReasonFormatKept = "FormatKept";
 
     // A command can be a whole script; the log keeps its start.
     private const int MaxLoggedCommandChars = 1000;
@@ -78,7 +83,10 @@ internal static class HookCommand
             log.Add("verdict", response.DecisionName);
             log.Add("result", response.Reason);
             if (response.CallAfter)
+            {
                 log.Add("callAfter", true);
+                log.Add("state", response.State);
+            }
 
             WriteStdout(response.ToJson());
             return ExitOk;
@@ -96,7 +104,7 @@ internal static class HookCommand
     private static HookResponse Handle(HookRequest request, string outputDir, HookLog log, out LogVerbosity importance)
     {
         // Which internal-error text fits if something throws: the file is being created, or an existing one edited.
-        var creating = request.IsAfter;
+        var creating = request.IsAfter && WriteState.Parse(request.State)?.IsNew == true;
         try
         {
             var cwd = request.Cwd ?? Environment.CurrentDirectory;
@@ -143,7 +151,7 @@ internal static class HookCommand
             using var filter = MessageFilter.Register();
 
             if (request.IsAfter)
-                return HandleAfter(path, target, output, log, out importance);
+                return HandleAfter(path, request.State, target, output, log, out importance);
 
             // Edit or creation is decided by the disk, not by the tool: "edit" with an empty oldString
             // creates a file too (slice 2 results, §1.2).
@@ -334,7 +342,7 @@ internal static class HookCommand
         {
             case EditAction.None:
                 importance = LogVerbosity.All;
-                return HookResponse.Allow(decision.Reason.ToString());
+                return AllowInPlace(path, decision.Reason.ToString(), log);
 
             case EditAction.Redirect:
                 {
@@ -370,12 +378,21 @@ internal static class HookCommand
         if (result.Succeeded)
         {
             importance = LogVerbosity.Actions;
-            return HookResponse.Allow(ReasonCheckedOut);
+            return AllowInPlace(path, ReasonCheckedOut, log);
         }
 
         importance = LogVerbosity.Issues;
         var (cause, fix) = HookMessages.ExplainCheckoutFailure(result);
         return RedirectExisting(path, target, output, ReasonCheckoutFailed, cause, fix, log);
+    }
+
+    // The tool writes the existing file in place: "after" brings it back to the format it has now
+    // (slice 6 results, §1.13). If the file cannot be read, the tool still runs, without "after".
+    private static HookResponse AllowInPlace(string path, string reason, HookLog log)
+    {
+        var (state, error) = NewFileWriter.Capture(path);
+        log.Add("stateError", error);
+        return state != null ? HookResponse.AllowThenAfter(reason, state) : HookResponse.Allow(reason);
     }
 
     private static HookResponse RedirectExisting(
@@ -410,7 +427,9 @@ internal static class HookCommand
 
         // The "after" call is the one that does something; this line matters only while debugging.
         importance = LogVerbosity.All;
-        return HookResponse.Allow(decision.Reason.ToString(), callAfter: decision.RequestsAfter);
+        return decision.RequestsAfter
+            ? HookResponse.AllowThenAfter(decision.Reason.ToString(), WriteState.New)
+            : HookResponse.Allow(decision.Reason.ToString());
     }
 
     private static HookResponse RedirectNew(
@@ -425,8 +444,21 @@ internal static class HookCommand
             : HookResponse.Deny(ReasonOutputFailed, RedirectMessages.OutputFailed(cause, result.Error!, isNewFile: true));
     }
 
+    // The file was written in place: only its format of before the write is restored. Visual Studio is not asked.
+    private static HookResponse RestoreFormat(string path, WriteState state, HookLog log, out LogVerbosity importance)
+    {
+        var sw = Stopwatch.StartNew();
+        var (changed, error) = NewFileWriter.Restore(path, state);
+        log.Add("formatMs", sw.ElapsedMilliseconds);
+        log.Add("formatChanged", changed);
+        log.Add("formatError", error);
+
+        importance = error != null ? LogVerbosity.Issues : changed ? LogVerbosity.Actions : LogVerbosity.All;
+        return HookResponse.Allow(changed ? ReasonFormatRestored : ReasonFormatKept);
+    }
+
     private static HookResponse HandleAfter(
-        string path, string target, OutputStore output, HookLog log, out LogVerbosity importance)
+        string path, string? stateValue, string target, OutputStore output, HookLog log, out LogVerbosity importance)
     {
         var exists = File.Exists(path);
         log.Add("exists", exists);
@@ -436,6 +468,19 @@ internal static class HookCommand
             importance = LogVerbosity.Issues;
             return HookResponse.Allow(ReasonNotCreated);
         }
+
+        // What "before" knew decides: a new file goes through the new-file flow, an existing one only gets its format
+        // back. Without a state nothing is touched: an existing file must never get a new file's format.
+        log.Add("state", stateValue);
+        var state = WriteState.Parse(stateValue);
+        if (state == null)
+        {
+            log.Add("stateMissing", true);
+            importance = LogVerbosity.Issues;
+            return HookResponse.Allow(ReasonStateMissing);
+        }
+        if (!state.IsNew)
+            return RestoreFormat(path, state, log, out importance);
 
         // Decided again: the solution may have been closed since "before",
         // and an SDK-style project may already list the file through a wildcard.

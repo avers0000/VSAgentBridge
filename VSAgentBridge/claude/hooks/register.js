@@ -2,7 +2,8 @@
 // Before Claude Code edits, writes or reads a file, or runs a shell command, under one of the configured workspace
 // roots, asks vsagentbridge.exe (two folders up) what to do with the call: let it through (allow), block it (deny),
 // or send it to another path (redirect: a copy under the bridge's Output). When the exe asks for it ("after": true),
-// calls it again once the tool has completed, so that a new file is added to its project. The exe's text for the
+// calls it again once the tool has completed (with the "state" of the first answer), so that a new file is added
+// to its project or a rewritten file gets its format back. The exe's text for the
 // model goes into the result's context. Outside the roots, or with no roots configured, the mod does nothing.
 // Everything Claude Code-specific lives here; code shared with the OpenCode adapter is in vsab-plugin-common.js.
 // One tool.call handler covers "before" and "after": the code before next(e) runs before the permission prompt
@@ -59,6 +60,7 @@ async function handleFile($, e, next, roots, field, isRead) {
     if (response.after !== true || !succeeded(result)) return result // nothing was written (refused, failed)
 
     const afterRequest = await makeRequest($, "after", e.tool, filePath)
+    if (typeof response.state === "string") afterRequest.state = response.state // what "before" knew, returned as is
     const afterAnswer = await askBridge($, afterRequest)
     const text = afterAnswer.failure !== undefined ? notAddedText(filePath, afterAnswer.failure) : afterAnswer.response.message
     return typeof text === "string" && text !== "" ? withContext(result, text) : result

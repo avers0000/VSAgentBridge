@@ -7,7 +7,8 @@ namespace VSAgentBridge.Logic;
 /// {"event":"before","tool":"edit","path":"...","cwd":"...","harness":"opencode","session":"..."}.
 /// Adapters translate harness events into it.
 /// "before" comes before a tool writes the file; "after" comes after it completed successfully, and only when
-/// the response to "before" asked for it ("after": true); "read" comes before a tool reads the file.
+/// the response to "before" asked for it ("after": true), with the "state" of that response returned unchanged
+/// (slice 6 results, §1.13); "read" comes before a tool reads the file.
 /// "shell" comes before a shell command runs ("command", optional "workdir"; no "path").
 /// "delete" and "rename" come before a tool deletes or moves a file ("path"; "rename" also "newPath"):
 /// a patch's "*** Delete File" and "*** Move to" (slice 4 results, §1.2).
@@ -24,7 +25,7 @@ internal sealed class HookRequest
     private static readonly string[] Events = { BeforeEvent, AfterEvent, ReadEvent, ShellEvent, DeleteEvent, RenameEvent };
 
     public HookRequest(string @event, string tool, string filePath, string? cwd, string? harness, string? session,
-        string? command = null, string? workdir = null, string? newPath = null)
+        string? command = null, string? workdir = null, string? newPath = null, string? state = null)
     {
         Event = @event;
         Tool = tool;
@@ -35,6 +36,7 @@ internal sealed class HookRequest
         Command = command;
         Workdir = workdir;
         NewPath = newPath;
+        State = state;
     }
 
     /// <summary>One of the event names above.</summary>
@@ -87,6 +89,12 @@ internal sealed class HookRequest
     /// <summary>"rename": the new path, as the model gave it.</summary>
     public string? NewPath { get; }
 
+    /// <summary>
+    /// "after": the "state" of the "before" response, as the adapter kept it; read with <see cref="WriteState.Parse"/>.
+    /// Null if the adapter sent none.
+    /// </summary>
+    public string? State { get; }
+
     /// <summary>Returns the request, or null and the reason if the JSON is not a valid request.</summary>
     public static HookRequest? Parse(string json, out string error)
     {
@@ -137,7 +145,7 @@ internal sealed class HookRequest
                 error = "";
                 return new HookRequest(ev, tool!, isShell ? "" : path!, cwd, GetString(root, "harness"),
                     GetString(root, "session"), isShell ? command : null, isShell ? GetString(root, "workdir") : null,
-                    ev == RenameEvent ? newPath : null);
+                    ev == RenameEvent ? newPath : null, ev == AfterEvent ? GetString(root, "state") : null);
             }
 
             return null;
