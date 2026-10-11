@@ -15,10 +15,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="claude\.claude-plugin\plugin.json" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="envdte" Version="8.0.2" ExcludeAssets="runtime" />
     <PackageReference Include="envdte80" Version="8.0.3" ExcludeAssets="runtime" />
     <PackageReference Include="ModelContextProtocol.Core" Version="2.2.0" />
@@ -51,6 +47,9 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="claude\hooks\register.js">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="claude\.mcp.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

@@ -21,6 +21,32 @@ internal static class PathUtil
         return full.StartsWith(dir, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// True if <paramref name="path"/> is under one of <paramref name="roots"/>: folders separated by ';'
+    /// (the mod's "workspaceRoots" option, same rule as register.js). Empty entries, relative paths and
+    /// entries that are not valid paths match nothing; no roots at all: nothing is under them.
+    /// </summary>
+    public static bool IsUnderAny(string path, string roots)
+    {
+        foreach (var part in roots.Split(';'))
+        {
+            var root = part.Trim();
+            if (root.Length == 0)
+                continue;
+            try
+            {
+                // IsPathRooted throws on characters not valid in a path (.NET Framework), so it is inside the try.
+                if (Path.IsPathRooted(root) && IsUnder(path, root))
+                    return true;
+            }
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
+            {
+                // Not a path: matches nothing.
+            }
+        }
+        return false;
+    }
+
     private static string WithTrailingSeparator(string path)
         => path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
 }

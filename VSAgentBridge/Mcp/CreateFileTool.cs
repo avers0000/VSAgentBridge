@@ -43,14 +43,15 @@ internal static class CreateFileTool
         }),
     };
 
-    public static CallToolResult Call(IDictionary<string, JsonElement>? arguments, BridgeSettings settings, string outputDir)
+    /// <param name="roots">The server's "--roots" (folders separated by ';'); null: no limit.</param>
+    public static CallToolResult Call(IDictionary<string, JsonElement>? arguments, BridgeSettings settings, string outputDir, string? roots)
     {
         var total = System.Diagnostics.Stopwatch.StartNew();
         var log = new HookLog();
         log.Add("mode", "mcp");
         log.Add("tool", McpMessages.CreateFileTool);
 
-        var outcome = RunOnSta(() => Create(arguments, outputDir, log));
+        var outcome = RunOnSta(() => Create(arguments, outputDir, roots, log));
 
         log.Add("result", outcome.Result);
         log.Add("isError", outcome.IsError);
@@ -64,7 +65,7 @@ internal static class CreateFileTool
         };
     }
 
-    private static Outcome Create(IDictionary<string, JsonElement>? arguments, string outputDir, HookLog log)
+    private static Outcome Create(IDictionary<string, JsonElement>? arguments, string outputDir, string? roots, HookLog log)
     {
         var written = false;
         try
@@ -92,6 +93,12 @@ internal static class CreateFileTool
                 return Refused(ResultFolderExists, McpMessages.FolderExists);
             if (File.Exists(path))
                 return Refused(ResultUseEdit, McpMessages.AlreadyExists);
+            if (roots != null && !PathUtil.IsUnderAny(path, roots))
+            {
+                // Outside the roots the bridge stays out (as the mod's hooks do): the write tool goes through untouched.
+                log.Add("reason", "OutsideRoots");
+                return Refused(ResultUseWrite, McpMessages.UseWrite(McpMessages.OutsideRoots));
+            }
             if (OutputLayout.IsInOutput(path, outputDir))
                 return Refused(ResultUseWrite, McpMessages.UseWrite(McpMessages.InOutput));
 

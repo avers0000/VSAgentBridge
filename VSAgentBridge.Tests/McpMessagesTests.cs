@@ -17,6 +17,7 @@ internal sealed class McpMessagesTests
 
     [TestMethod]
     [DataRow(McpMessages.InOutput)]
+    [DataRow(McpMessages.OutsideRoots)]
     [DataRow(McpMessages.InternalError)]
     public void Causes_AreSentencesForUseWrite(string cause)
     {

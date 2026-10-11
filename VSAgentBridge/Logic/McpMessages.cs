@@ -33,6 +33,8 @@ internal static class McpMessages
 
     public const string InOutput = "the path is in VS Agent Bridge's Output folder.";
 
+    public const string OutsideRoots = "the path is outside VS Agent Bridge's workspace roots.";
+
     public static string WriteFailed(string error) => $"writing the file failed ({error}).";
 
     public const string InternalError = "the bridge failed (details are in its log).";

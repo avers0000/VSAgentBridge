@@ -15,8 +15,8 @@ and checks files out of TFVC, but only when you use the file tools.
 - Change existing files with the edit tool. Do not rewrite a whole existing file with the write tool
   (it changes line endings and may change other things); if that is really simpler, say why first,
   and change nothing that was not asked for.
-- To create a new file, use the create_file tool of VS Agent Bridge first (vsab_create_file
-  or mcp__vsab__create_file, depending on the agent). It writes the file and adds it to its
+- To create a new file, use the create_file tool of VS Agent Bridge first (its name contains
+  "vsab" and ends with "create_file"; the prefix depends on the agent). It writes the file and adds it to its
   Visual Studio project the way Visual Studio itself does, so you do not edit project or
   solution files (.csproj, .vbproj, .sqlproj, .sln, ...) to include new files.
 - The write tool is the fallback for new files: use it when create_file answers that you
