@@ -39,8 +39,12 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <!-- Claude Code mod. Folders whose name starts with a dot are excluded from SDK default items,
-         so .claude-plugin\plugin.json is included explicitly. -->
+         so the files in .claude-plugin are included explicitly. marketplace.json lists the mod itself
+         ("source": "./"), so Claude Code installs it from this folder and loads it in place, next to the exe. -->
     <None Include="claude\.claude-plugin\plugin.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="claude\.claude-plugin\marketplace.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="claude\hooks\hooks.json">
