@@ -2,7 +2,7 @@
   "name": "vsab",
   "description": "VS Agent Bridge plugin for Claude Code",
   "owner": {
-    "name": "VS Agent Bridge"
+    "name": "AVErs"
   },
   "plugins": [
     {

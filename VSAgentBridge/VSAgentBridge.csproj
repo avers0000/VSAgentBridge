@@ -12,6 +12,14 @@
 
     <PlatformTarget>AnyCPU</PlatformTarget>
     <Prefer32Bit>false</Prefer32Bit>
+    <AssemblyTitle>VS Agent Bridge</AssemblyTitle>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <Version>0.0.0-dev</Version>
+    <Authors>AVErs</Authors>
+    <Product>VS Agent Bridge</Product>
+    <Description>Lets CLI coding agents (Claude Code, OpenCode) edit files in Visual Studio solutions: TFVC checkout, adding new files to projects, redirect to Output.</Description>
+    <Copyright>©2026 AVErs</Copyright>
+    <NeutralLanguage>en-US</NeutralLanguage>
   </PropertyGroup>
 
   <ItemGroup>
@@ -65,6 +73,46 @@
   <Target Name="CopyPluginCommon" AfterTargets="Build">
     <Copy SourceFiles="vsab-plugin-common.js" DestinationFolder="$(OutDir)opencode" SkipUnchangedFiles="true" />
     <Copy SourceFiles="vsab-plugin-common.js" DestinationFolder="$(OutDir)claude\hooks" SkipUnchangedFiles="true" />
+  </Target>
+  <!--
+    Release package: after a Release build, copies the files users need into bin\Release\package\, laid out as the
+    install folder, signs the copy of vsagentbridge.exe there (Build\Scripts\SignBinaries.ps1), and zips the folder as
+    bin\Release\VSAgentBridge-<Version>.zip with a .sha256 file next to it. Files are listed explicitly, so build
+    leftovers (vsagentbridge.json, .pdb, files Claude Code writes into the mod folder) never reach the package; a listed
+    file that is missing, a missing signing key or a failed signature fails the build. Dependency DLLs are taken by
+    mask: every DLL in the output is a dependency, and a missing one would stop the exe from starting.
+  -->
+  <Target Name="Package" AfterTargets="Build" DependsOnTargets="CopyPluginCommon" Condition="'$(Configuration)' == 'Release'">
+    <PropertyGroup>
+      <PackageName>VSAgentBridge-$(Version).zip</PackageName>
+      <PackageDir>$(MSBuildProjectDirectory)\$(BaseOutputPath)$(Configuration)\package\</PackageDir>
+      <PackageZip>$(MSBuildProjectDirectory)\$(BaseOutputPath)$(Configuration)\$(PackageName)</PackageZip>
+    </PropertyGroup>
+    <ItemGroup>
+      <PackageRoot Include="$(OutDir)vsagentbridge.exe;$(OutDir)vsagentbridge.exe.config;$(OutDir)vsagentbridge.sample.json;$(OutDir)AGENTS.global.sample.md;$(OutDir)AGENTS.sample.md;THIRD-PARTY-NOTICES.txt" />
+      <PackageRoot Include="$(OutDir)*.dll" />
+      <PackageClaude Include="$(OutDir)claude\.mcp.json" />
+      <PackageClaudeManifest Include="$(OutDir)claude\.claude-plugin\plugin.json;$(OutDir)claude\.claude-plugin\marketplace.json" />
+      <PackageClaudeHooks Include="$(OutDir)claude\hooks\hooks.json;$(OutDir)claude\hooks\register.js;$(OutDir)claude\hooks\vsab-plugin-common.js" />
+      <PackageOpenCode Include="$(OutDir)opencode\index.js;$(OutDir)opencode\vsab-plugin-common.js" />
+    </ItemGroup>
+    <RemoveDir Directories="$(PackageDir)" />
+    <Copy SourceFiles="@(PackageRoot)" DestinationFolder="$(PackageDir)" />
+    <Copy SourceFiles="@(PackageClaude)" DestinationFolder="$(PackageDir)claude" />
+    <Copy SourceFiles="@(PackageClaudeManifest)" DestinationFolder="$(PackageDir)claude\.claude-plugin" />
+    <Copy SourceFiles="@(PackageClaudeHooks)" DestinationFolder="$(PackageDir)claude\hooks" />
+    <Copy SourceFiles="@(PackageOpenCode)" DestinationFolder="$(PackageDir)opencode" />
+    <!-- Claude Code needs the Output folder to exist before a session starts; an empty folder may not survive a zip. -->
+    <MakeDir Directories="$(PackageDir)Output" />
+    <Touch Files="$(PackageDir)Output\.keep" AlwaysCreate="true" />
+    <!-- Only the packaged copy is signed; the build output keeps the exe as the compiler produced it. -->
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\Build\Scripts\SignBinaries.ps1&quot; -TargetPath &quot;$(PackageDir)vsagentbridge.exe&quot;" />
+    <ZipDirectory SourceDirectory="$(PackageDir)" DestinationFile="$(PackageZip)" Overwrite="true" />
+    <GetFileHash Files="$(PackageZip)" Algorithm="SHA256">
+      <Output TaskParameter="Hash" PropertyName="PackageHash" />
+    </GetFileHash>
+    <WriteLinesToFile File="$(PackageZip).sha256" Lines="$(PackageHash)  $(PackageName)" Overwrite="true" />
+    <Message Importance="high" Text="Package: $(PackageZip)" />
   </Target>
   <!--
     EnvDTE/stdole interop types are embedded into the exe (NoPIA).
