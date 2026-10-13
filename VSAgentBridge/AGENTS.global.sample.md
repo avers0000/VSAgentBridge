@@ -1,4 +1,5 @@
-﻿# Rules for folders with VS Agent Bridge only
+﻿<!-- vsab:begin -->
+# Rules for folders with VS Agent Bridge only
 
 Before you follow any rule below, check your working directory
 (the "Working directory" line of your environment information):
@@ -46,3 +47,4 @@ and checks files out of TFVC, but only when you use the file tools.
 - Version control (TFVC, git) is the user's business. Before you run a command that changes anything
   in it (checkout, add, undo, commit, reset, stash, push, ...), ask the user and wait for the answer.
   Commands that only read (status, diff, log, history) need no asking.
+<!-- vsab:end -->

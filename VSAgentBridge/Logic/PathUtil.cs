@@ -11,6 +11,23 @@ internal static class PathUtil
         => Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(baseDirectory, path));
 
     /// <summary>
+    /// True if <paramref name="path"/> is absolute: "C:\..." / "C:/..." or a UNC path ("\\server\share").
+    /// "D:folder" (drive-relative) and "\folder" (root of the current drive) are rooted but not absolute:
+    /// they depend on the current directory of whoever runs the bridge.
+    /// Path.IsPathFullyQualified exists only from .NET Core 2.1; this is its Windows logic for net48.
+    /// </summary>
+    public static bool IsFullyQualified(string path) =>
+        path.Length >= 3 && char.IsLetter(path[0]) && path[1] == ':' && (path[2] == '\\' || path[2] == '/')
+        || path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal);
+
+    /// <summary>
+    /// True if two paths written in settings files name the same folder or file: case, "/" versus "\"
+    /// and a trailing separator do not matter. No normalization of "." or ".." and no file system access.
+    /// </summary>
+    public static bool SamePath(string a, string b) =>
+        string.Equals(NormalizeForCompare(a), NormalizeForCompare(b), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// True if <paramref name="path"/> equals <paramref name="directory"/> or is located inside it
     /// at any depth. Case-insensitive (Windows file system).
     /// </summary>
@@ -49,4 +66,5 @@ internal static class PathUtil
 
     private static string WithTrailingSeparator(string path)
         => path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+    private static string NormalizeForCompare(string path) => path.Trim().Replace('/', '\\').TrimEnd('\\');
 }

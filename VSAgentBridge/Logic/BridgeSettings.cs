@@ -138,7 +138,7 @@ internal sealed class BridgeSettings
             return false;
 
         var trimmed = value!.Trim();
-        if (!IsFullyQualified(trimmed))
+        if (!PathUtil.IsFullyQualified(trimmed))
             return false;
 
         try
@@ -151,9 +151,4 @@ internal sealed class BridgeSettings
             return false;
         }
     }
-
-    // Path.IsPathFullyQualified exists only from .NET Core 2.1; this is its Windows logic for net48.
-    private static bool IsFullyQualified(string path) =>
-        path.Length >= 3 && char.IsLetter(path[0]) && path[1] == ':' && (path[2] == '\\' || path[2] == '/')
-        || path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal);
 }
