@@ -10,9 +10,9 @@ internal sealed class ExternalCommandTests
 {
     // ---- FindInPath ----
 
-    // PATHEXT is upper case (".EXE"), so the path found ends with ".EXE"; Windows paths are compared ignoring case.
+    // PATHEXT is upper case (".EXE"); the path found has the extension in lower case, as files are usually named.
     private static void AssertPath(string expected, string? actual) =>
-        Assert.AreEqual(expected, actual, ignoreCase: true);
+        Assert.AreEqual(expected, actual);
 
     private static Func<string, bool> Existing(params string[] files) =>
         path => files.Contains(path, StringComparer.OrdinalIgnoreCase);

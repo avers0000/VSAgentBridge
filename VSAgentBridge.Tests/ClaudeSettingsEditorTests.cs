@@ -109,6 +109,24 @@ internal sealed class ClaudeSettingsEditorTests
         Assert.IsNull(ClaudeSettingsEditor.GetPluginDirs(Parse(json)));
     }
 
+    [TestMethod]
+    public void MarketplacePluginEnabled_True()
+    {
+        Assert.IsTrue(ClaudeSettingsEditor.IsMarketplacePluginEnabled(Parse(Installed)));
+    }
+
+    [TestMethod]
+    [DataRow("{}")]
+    [DataRow("""{ "enabledPlugins": {} }""")]
+    [DataRow("""{ "enabledPlugins": { "vsagentbridge@vsab": false } }""")]
+    [DataRow("""{ "enabledPlugins": { "vsagentbridge@vsab": "true" } }""")]
+    [DataRow("""{ "enabledPlugins": { "vsagentbridge@inline": true } }""")]
+    [DataRow("""{ "enabledPlugins": [] }""")]
+    public void MarketplacePluginEnabled_False(string json)
+    {
+        Assert.IsFalse(ClaudeSettingsEditor.IsMarketplacePluginEnabled(Parse(json)));
+    }
+
     // ---- additionalDirectories ----
 
     [TestMethod]

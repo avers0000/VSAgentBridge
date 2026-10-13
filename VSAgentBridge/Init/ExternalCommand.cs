@@ -120,7 +120,8 @@ internal sealed class ExternalCommand
                 string candidate;
                 try
                 {
-                    candidate = System.IO.Path.Combine(folder, name + extension);
+                    // PATHEXT is upper case (".EXE"); file names are not case-sensitive, so show the usual ".exe".
+                    candidate = System.IO.Path.Combine(folder, name + extension.ToLowerInvariant());
                 }
                 catch (ArgumentException)
                 {

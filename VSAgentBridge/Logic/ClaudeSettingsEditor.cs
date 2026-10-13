@@ -41,6 +41,10 @@ internal static class ClaudeSettingsEditor
         return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
+    /// <summary>True if the marketplace plugin is installed and enabled (enabledPlugins."vsagentbridge@vsab": true).</summary>
+    public static bool IsMarketplacePluginEnabled(JsonObject root) =>
+        Find(root, "enabledPlugins", PluginId) is JsonValue value && value.TryGetValue<bool>(out var enabled) && enabled;
+
     /// <summary>
     /// Adds <paramref name="directory"/> to permissions.additionalDirectories unless it is there already.
     /// Returns true if the tree changed.
