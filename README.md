@@ -75,10 +75,10 @@ workspaces keep files writable and need no checkout.
    right-click the folder > **Open in Terminal**), then run:
 
 ```powershell
-(Get-FileHash .\VSAgentBridge-<version>.zip -Algorithm SHA256).Hash -eq (Get-Content .\VSAgentBridge-<version>.zip.sha256).Split(' ')[0]
+Get-ChildItem .\VSAgentBridge-*.zip.sha256 | ForEach-Object { $hash, $zip = (Get-Content $_) -split '\s+'; "$zip $((Get-FileHash $zip -Algorithm SHA256).Hash -eq $hash)" }
 ```
 
-   `True` means the file is the one that was published.
+   `True` after the file name means the file is the one that was published.
 
 2. Extract it to a folder of your choice, for example `C:\Tools\VSAgentBridge` - this is `<install-dir>`.
    The bridge writes its `Logs`, `Output` and `Settings` folders there, so choose a folder you can write to without
@@ -375,6 +375,9 @@ Optional. Without a configuration file the defaults apply. To change them, copy 
 
 A broken file or value does not stop the bridge: defaults are used for what could not be read, with a warning in
 the log.
+
+Changes apply to file edits at once - the hooks read the file on every call. The MCP server (`vsab_create_file`)
+reads it when it starts: start a new Claude Code session, or restart the OpenCode service.
 
 ## Elevation level
 
