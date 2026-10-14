@@ -89,7 +89,7 @@
       <PackageZip>$(MSBuildProjectDirectory)\$(BaseOutputPath)$(Configuration)\$(PackageName)</PackageZip>
     </PropertyGroup>
     <ItemGroup>
-      <PackageRoot Include="$(OutDir)vsagentbridge.exe;$(OutDir)vsagentbridge.exe.config;$(OutDir)vsagentbridge.sample.json;$(OutDir)AGENTS.global.sample.md;$(OutDir)AGENTS.sample.md;THIRD-PARTY-NOTICES.txt" />
+      <PackageRoot Include="$(OutDir)vsagentbridge.exe;$(OutDir)vsagentbridge.exe.config;$(OutDir)vsagentbridge.sample.json;$(OutDir)AGENTS.global.sample.md;$(OutDir)AGENTS.sample.md;THIRD-PARTY-NOTICES.txt;..\README.md;..\CHANGELOG.md" />
       <PackageRoot Include="$(OutDir)*.dll" />
       <PackageClaude Include="$(OutDir)claude\.mcp.json" />
       <PackageClaudeManifest Include="$(OutDir)claude\.claude-plugin\plugin.json;$(OutDir)claude\.claude-plugin\marketplace.json" />
