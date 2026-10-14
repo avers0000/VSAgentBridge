@@ -1,6 +1,6 @@
 {
   "name": "vsagentbridge",
-  "version": "0.0.0-dev",
+  "version": "1.0.0",
   "description": "VS Agent Bridge for Claude Code: checks file edits, new files and shell commands under the configured workspace roots with vsagentbridge.exe (TFVC checkout, adding new files to Visual Studio projects, redirect to Output, refusing deletes and renames).",
   "author": {
     "name": "AVErs"

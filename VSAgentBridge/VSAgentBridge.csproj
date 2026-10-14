@@ -14,7 +14,7 @@
     <Prefer32Bit>false</Prefer32Bit>
     <AssemblyTitle>VS Agent Bridge</AssemblyTitle>
     <NuGetAuditMode>all</NuGetAuditMode>
-    <Version>0.0.0-dev</Version>
+    <Version>1.0.0</Version>
     <Authors>AVErs</Authors>
     <Product>VS Agent Bridge</Product>
     <Description>Lets CLI coding agents (Claude Code, OpenCode) edit files in Visual Studio solutions: TFVC checkout, adding new files to projects, redirect to Output.</Description>
