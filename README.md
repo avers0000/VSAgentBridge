@@ -416,7 +416,16 @@ There is no uninstaller: `init` cannot know whether you changed the same files l
 
 ## License
 
-_To be added._
+VS Agent Bridge is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE)
+(<https://polyformproject.org/licenses/noncommercial/1.0.0>). It is not open source.
+
+- **Free for noncommercial use:** personal use (study, experiments, hobby projects) and use by noncommercial
+  organizations (charities, educational and public research institutions, government institutions and others
+  listed in the license).
+- **Any other use requires a separate license from the author** - including using the bridge for your work in a
+  company. To request one, write to [vsagentbridge@gmail.com](mailto:vsagentbridge@gmail.com).
+- You may change your copy and share it for noncommercial purposes, under the same license and with the
+  `Required Notice` line from `LICENSE`.
 
 Third-party libraries shipped with the bridge and their licenses are listed in `THIRD-PARTY-NOTICES.txt`
 (next to `vsagentbridge.exe` in the package; `VSAgentBridge/THIRD-PARTY-NOTICES.txt` in the repository).
@@ -425,3 +434,4 @@ Third-party libraries shipped with the bridge and their licenses are listed in `
 
 External pull requests are not accepted.
 If you want to report a problem or suggest an improvement, please open an Issue.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
