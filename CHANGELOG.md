@@ -5,6 +5,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed
+- `LICENSE`: the author's name added to the `Required Notice` line.
+
+## [1.0.0] - 2026-10-14
 ### Added
 - Initial release.
 - Plugins for Claude Code CLI (a mod, installed from a local marketplace) and OpenCode that pass the agent's file
